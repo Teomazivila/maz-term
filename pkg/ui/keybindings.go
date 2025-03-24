@@ -138,3 +138,12 @@ func (k *KeyMap) RenderHelpView(width, height int, activeTab string) string {
 
 	return panel
 }
+
+// For testing purposes
+func (k *KeyMap) GetGlobalBindings() []KeyBinding {
+	return k.Global
+}
+
+func (k *KeyMap) GetTabBindings(tab string) []KeyBinding {
+	return k.TabLevel[tab]
+}
