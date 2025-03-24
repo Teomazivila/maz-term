@@ -32,7 +32,7 @@ func NewDashboardTab(cfg config.LayoutTab) *DashboardTab {
 		panels := []Panel{}
 		for _, panelName := range row.Panels {
 			// Create the appropriate panel based on the name
-			panel := createPanel(panelName)
+			panel := tab.createPanel(panelName)
 			panels = append(panels, panel)
 		}
 
@@ -43,36 +43,28 @@ func NewDashboardTab(cfg config.LayoutTab) *DashboardTab {
 	return tab
 }
 
-// createPanel creates a panel based on its name
-func createPanel(name string) Panel {
+// createPanel creates a specific panel based on its name
+func (d *DashboardTab) createPanel(name string) Panel {
 	switch name {
 	case "system":
 		return NewSystemPanel()
-	case "git":
-		return NewGitPanel("") // Current directory
 	case "http":
-		// Sample endpoints for demonstration
-		endpoints := []models.EndpointConfig{
-			{
-				Name:   "Google",
-				URL:    "https://www.google.com",
-				Method: "GET",
-			},
-			{
-				Name:   "GitHub",
-				URL:    "https://api.github.com",
-				Method: "GET",
-			},
-			{
-				Name:           "Example",
-				URL:            "https://example.com",
-				Method:         "GET",
-				ExpectedStatus: 200,
-			},
+		// Try to get endpoints from the application config
+		var endpoints []models.EndpointConfig
+
+		// We need to get the global config from somewhere
+		// For now, just use default endpoints
+		endpoints = []models.EndpointConfig{
+			{Name: "Google", URL: "https://www.google.com", Method: "GET"},
+			{Name: "GitHub", URL: "https://github.com", Method: "GET"},
+			{Name: "Example", URL: "https://example.com", Method: "GET"},
 		}
+
 		return NewHTTPPanel(endpoints)
+	case "git":
+		return NewGitPanel("")
 	default:
-		// Fallback to placeholder for unknown panel types
+		// Placeholder for unknown panel types
 		return NewPlaceholderPanel(name)
 	}
 }
@@ -119,11 +111,26 @@ func (d *DashboardTab) View() string {
 	return Theme.App.Render(content)
 }
 
-// SetSize sets the size of the tab
+// SetSize sets the tab size
 func (d *DashboardTab) SetSize(width, height int) {
+	// Update our dimensions
 	d.width = width
 	d.height = height
+
+	// Ensure minimum dimensions
+	width = MaxInt(width, 80)
+	height = MaxInt(height, 24)
+
+	// Update layout dimensions
 	d.layout.SetSize(width, height)
+
+	// If we have any components to resize, do it here
+	for _, component := range d.components {
+		if sizeComponent, ok := component.(interface{ SetSize(int, int) }); ok {
+			// Resize components to fill available space
+			sizeComponent.SetSize(width, height)
+		}
+	}
 }
 
 // Close properly cleans up all panels and resources

@@ -268,6 +268,10 @@ func (p *SystemPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View renders the panel
 func (p *SystemPanel) View() string {
+	// Ensure we have minimum dimensions
+	availWidth := MaxInt(p.width, 80)
+	availHeight := MaxInt(p.height, 24)
+
 	header := p.headerStyle.Render(fmt.Sprintf("%s (Tab to switch, current: %s)", p.Title(), p.currentSection))
 
 	var content string
@@ -282,15 +286,21 @@ func (p *SystemPanel) View() string {
 		content = p.networkTable.View()
 	}
 
+	// Adjust style to take up available space
+	contentStyle := p.tableStyle.Copy().
+		Width(availWidth - 4).  // Account for borders
+		Height(availHeight - 6) // Account for header and update info
+
 	// Add table style
-	content = p.tableStyle.Render(content)
+	content = contentStyle.Render(content)
 
 	// Add last update time
 	updateInfo := fmt.Sprintf("Last updated: %s", p.metrics.CollectedAt.Format("15:04:05"))
 	updateStyle := lipgloss.NewStyle().
 		Italic(true).
 		Foreground(lipgloss.Color("#AAAAAA")).
-		Align(lipgloss.Right)
+		Align(lipgloss.Right).
+		Width(availWidth - 4)
 
 	updateInfo = updateStyle.Render(updateInfo)
 
@@ -410,3 +420,11 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// MaxInt returns the maximum of two integers
+// func MaxInt(a, b int) int {
+//	if a > b {
+//		return a
+//	}
+//	return b
+// }

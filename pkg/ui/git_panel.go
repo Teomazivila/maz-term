@@ -132,15 +132,30 @@ func (p *GitPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View renders the panel
 func (p *GitPanel) View() string {
+	// Ensure we have minimum dimensions
+	availWidth := MaxInt(p.width, 80)
+	availHeight := MaxInt(p.height, 24)
+
 	header := p.headerStyle.Render(p.Title())
-	content := p.tableStyle.Render(p.detailsTable.View())
+
+	// Adjust table style to take up available space
+	contentStyle := p.tableStyle.Copy().
+		Width(availWidth - 4).  // Account for borders
+		Height(availHeight - 6) // Account for header and update info
+
+	content := contentStyle.Render(p.detailsTable.View())
 
 	// Add last update time
-	updateInfo := fmt.Sprintf("Last updated: %s", p.metrics.LastCommit.Format("15:04:05"))
+	updateInfo := fmt.Sprintf("Last updated: %s", time.Now().Format("15:04:05"))
+	if !p.metrics.LastCommit.IsZero() {
+		updateInfo = fmt.Sprintf("Last updated: %s", p.metrics.LastCommit.Format("15:04:05"))
+	}
+
 	updateStyle := lipgloss.NewStyle().
 		Italic(true).
 		Foreground(lipgloss.Color("#AAAAAA")).
-		Align(lipgloss.Right)
+		Align(lipgloss.Right).
+		Width(availWidth - 4)
 
 	updateInfo = updateStyle.Render(updateInfo)
 

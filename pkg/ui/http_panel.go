@@ -147,8 +147,18 @@ func (p *HTTPPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View renders the panel
 func (p *HTTPPanel) View() string {
+	// Ensure we have minimum dimensions
+	availWidth := MaxInt(p.width, 80)
+	availHeight := MaxInt(p.height, 24)
+
 	header := p.headerStyle.Render(p.Title())
-	content := p.tableStyle.Render(p.healthTable.View())
+
+	// Adjust table style to take up available space
+	contentStyle := p.tableStyle.Copy().
+		Width(availWidth - 4).  // Account for borders
+		Height(availHeight - 6) // Account for header and update info
+
+	content := contentStyle.Render(p.healthTable.View())
 
 	// Add last update time
 	updateTime := time.Now()
@@ -162,7 +172,8 @@ func (p *HTTPPanel) View() string {
 	updateStyle := lipgloss.NewStyle().
 		Italic(true).
 		Foreground(lipgloss.Color("#AAAAAA")).
-		Align(lipgloss.Right)
+		Align(lipgloss.Right).
+		Width(availWidth - 4)
 
 	updateInfo = updateStyle.Render(updateInfo)
 

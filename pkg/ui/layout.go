@@ -130,11 +130,17 @@ func (l *Layout) Render() string {
 	// Calculate the available height (excluding spacing)
 	availableHeight := l.height - ((len(l.rows) - 1) * l.spacing)
 
+	// Ensure minimum available height
+	availableHeight = MaxInt(availableHeight, 20) // Minimum 20 lines
+
 	// Render each row
 	renderedRows := make([]string, len(l.rows))
 	for i, row := range l.rows {
 		// Calculate the height for this row
 		rowHeight := (row.size * availableHeight) / totalWeight
+
+		// Ensure minimum row height
+		rowHeight = MaxInt(rowHeight, 10) // Minimum 10 lines per row
 
 		// Render the row
 		renderedRows[i] = l.renderRow(row, rowHeight)
@@ -154,8 +160,14 @@ func (l *Layout) renderRow(row LayoutRow, height int) string {
 	// Calculate available width for panels (excluding spacing)
 	availableWidth := l.width - ((len(row.panels) - 1) * l.spacing)
 
+	// Ensure minimum width
+	availableWidth = MaxInt(availableWidth, 80) // Minimum 80 columns
+
 	// Calculate panel width (equal distribution for now)
 	panelWidth := availableWidth / len(row.panels)
+
+	// Ensure minimum panel width
+	panelWidth = MaxInt(panelWidth, 40) // Minimum 40 columns per panel
 
 	// Render each panel
 	renderedPanels := make([]string, len(row.panels))
