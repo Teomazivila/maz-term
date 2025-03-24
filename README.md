@@ -10,7 +10,7 @@ A powerful, customizable terminal-based dashboard for DevOps professionals. Moni
 
 ## Features
 
-- **Terminal-based UI**: Fast, keyboard-driven interface built with [Bubble Tea](https://github.com/charmbracelet/bubbletea)
+- **Terminal-based UI**: Fast, keyboard-driven interface built with [Bubble Tea](https://github.com/charmbracelet/bubbletea) and an alternative [TermUI](https://github.com/gizak/termui) implementation
 - **Real-time Monitoring**: Track system metrics, service health, and deployment status
 - **Multiple Integrations**:
   - Local system metrics (CPU, memory, disk, network)
@@ -57,13 +57,35 @@ make install
 devops-dashboard init
 ```
 
-2. Start the dashboard:
+2. Start the dashboard (choose your preferred UI implementation):
 
 ```bash
-devops-dashboard
+# Bubble Tea version
+make run
+
+# TermUI version
+make run-termui
 ```
 
 3. Press `?` to view keyboard shortcuts and help.
+
+## UI Implementations
+
+The dashboard comes with two different UI implementations:
+
+### Bubble Tea
+
+The default implementation using the [Bubble Tea](https://github.com/charmbracelet/bubbletea) library. It features a flexible, component-based approach with good interactivity.
+
+### TermUI
+
+An alternative implementation using [TermUI](https://github.com/gizak/termui) that provides:
+- Built-in dashboard components (gauges, sparklines, charts)
+- Grid-based layout system
+- Better stability during updates
+- Optimized for data visualization
+
+See [README-termui.md](README-termui.md) for more details on the TermUI implementation.
 
 ## Configuration
 

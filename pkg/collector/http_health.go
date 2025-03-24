@@ -187,3 +187,8 @@ func (c *HTTPHealthChecker) checkEndpoint(ctx context.Context, endpoint models.E
 
 	return metric
 }
+
+// GetEndpoints returns the configured endpoints for the health checker
+func (h *HTTPHealthChecker) GetEndpoints() []models.EndpointConfig {
+	return h.endpoints
+}

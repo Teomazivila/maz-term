@@ -5,14 +5,16 @@ import (
 	"os"
 	"time"
 
+	"github.com/Teomazivila/maz-term/pkg/models"
 	"github.com/spf13/viper"
 )
 
 // Config represents the application configuration
 type Config struct {
-	General GeneralConfig `mapstructure:"general"`
-	Layout  []LayoutTab   `mapstructure:"layout"`
-	Metrics MetricsConfig `mapstructure:"metrics"`
+	General   GeneralConfig           `mapstructure:"general"`
+	Layout    []LayoutTab             `mapstructure:"layout"`
+	Metrics   MetricsConfig           `mapstructure:"metrics"`
+	Endpoints []models.EndpointConfig `mapstructure:"endpoints"`
 }
 
 // GeneralConfig contains general application settings
@@ -24,13 +26,7 @@ type GeneralConfig struct {
 
 // LayoutTab represents a tab in the dashboard layout
 type LayoutTab struct {
-	Name string      `mapstructure:"name"`
-	Rows []LayoutRow `mapstructure:"rows"`
-}
-
-// LayoutRow represents a row in the dashboard layout
-type LayoutRow struct {
-	Size   int      `mapstructure:"size"`
+	Name   string   `mapstructure:"name"`
 	Panels []string `mapstructure:"panels"`
 }
 
@@ -125,17 +121,20 @@ func createDefaultConfig() (*Config, error) {
 		},
 		Layout: []LayoutTab{
 			{
-				Name: "System Overview",
-				Rows: []LayoutRow{
-					{
-						Size:   1,
-						Panels: []string{"cpu", "memory", "disk", "network"},
-					},
-					{
-						Size:   2,
-						Panels: []string{"processes"},
-					},
-				},
+				Name:   "System Overview",
+				Panels: []string{"cpu", "memory", "disk", "network"},
+			},
+			{
+				Name:   "System",
+				Panels: []string{"system"},
+			},
+			{
+				Name:   "HTTP",
+				Panels: []string{"http"},
+			},
+			{
+				Name:   "Git",
+				Panels: []string{"git"},
 			},
 		},
 		Metrics: MetricsConfig{
@@ -174,4 +173,29 @@ func SaveConfig(config *Config, filePath string) error {
 	}
 
 	return nil
+}
+
+// DefaultConfig returns the default configuration
+func DefaultConfig() *Config {
+	return &Config{
+		Layout: []LayoutTab{
+			{
+				Name:   "System",
+				Panels: []string{"system"},
+			},
+			{
+				Name:   "HTTP",
+				Panels: []string{"http"},
+			},
+			{
+				Name:   "Git",
+				Panels: []string{"git"},
+			},
+		},
+		Endpoints: []models.EndpointConfig{
+			{Name: "Google", URL: "https://www.google.com", Method: "GET"},
+			{Name: "GitHub", URL: "https://github.com", Method: "GET"},
+			{Name: "Example", URL: "https://example.com", Method: "GET"},
+		},
+	}
 }

@@ -2,7 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/Teomazivila/maz-term/pkg/config"
 	tea "github.com/charmbracelet/bubbletea"
@@ -86,47 +85,7 @@ func (a *App) Init() tea.Cmd {
 		fmt.Println("Error loading config:", err)
 
 		// Create a default configuration manually since LoadConfig() had an error
-		cfg = &config.Config{
-			General: config.GeneralConfig{
-				RefreshInterval:  5 * time.Second,
-				Theme:            "dark",
-				HistoryRetention: 7 * 24 * time.Hour,
-			},
-			Layout: []config.LayoutTab{
-				{
-					Name: "System Overview",
-					Rows: []config.LayoutRow{
-						{
-							Size:   1,
-							Panels: []string{"system"},
-						},
-					},
-				},
-				{
-					Name: "HTTP Endpoints",
-					Rows: []config.LayoutRow{
-						{
-							Size:   1,
-							Panels: []string{"http"},
-						},
-					},
-				},
-				{
-					Name: "Git Repository",
-					Rows: []config.LayoutRow{
-						{
-							Size:   1,
-							Panels: []string{"git"},
-						},
-					},
-				},
-			},
-			Metrics: config.MetricsConfig{
-				Local: config.LocalMetricsConfig{
-					Enabled: true,
-				},
-			},
-		}
+		cfg = DefaultConfig()
 	}
 
 	// Set the configuration
@@ -274,4 +233,23 @@ func (a *App) setupKeyBindings() {
 	})
 
 	// Add more keybindings as needed
+}
+
+func DefaultConfig() *config.Config {
+	return &config.Config{
+		Layout: []config.LayoutTab{
+			{
+				Name:   "System",
+				Panels: []string{"system"},
+			},
+			{
+				Name:   "HTTP",
+				Panels: []string{"http"},
+			},
+			{
+				Name:   "Git",
+				Panels: []string{"git"},
+			},
+		},
+	}
 }

@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"context"
+
 	"github.com/Teomazivila/maz-term/pkg/config"
 	"github.com/Teomazivila/maz-term/pkg/models"
 	tea "github.com/charmbracelet/bubbletea"
@@ -15,6 +17,7 @@ type DashboardTab struct {
 	height     int
 	config     config.LayoutTab
 	components []tea.Model
+	context    context.Context
 }
 
 // NewDashboardTab creates a new dashboard tab
@@ -26,19 +29,15 @@ func NewDashboardTab(cfg config.LayoutTab) *DashboardTab {
 		config: cfg,
 	}
 
-	// Initialize the layout rows
-	for _, row := range cfg.Rows {
-		// Create panels for this row
-		panels := []Panel{}
-		for _, panelName := range row.Panels {
-			// Create the appropriate panel based on the name
-			panel := tab.createPanel(panelName)
-			panels = append(panels, panel)
-		}
-
-		// Add the row to the layout
-		tab.layout.AddRow(row.Size, panels...)
+	// Initialize with a single row for all panels
+	panels := []Panel{}
+	for _, panelName := range cfg.Panels {
+		panel := tab.createPanel(panelName)
+		panels = append(panels, panel)
 	}
+
+	// Add all panels to a single row
+	tab.layout.AddRow(1, panels...)
 
 	return tab
 }
