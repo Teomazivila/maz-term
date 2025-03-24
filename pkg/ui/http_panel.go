@@ -104,8 +104,8 @@ func (p *HTTPPanel) SetSize(width, height int) {
 	p.height = height
 
 	// Update table size
-	tableHeight := height - 4 // Account for borders and header
-	tableWidth := width - 4   // Account for borders
+	tableHeight := MaxInt(height-4, 5) // Account for borders and header, minimum 5
+	tableWidth := MaxInt(width-4, 40)  // Account for borders, minimum 40
 
 	// Update table height
 	p.healthTable.SetHeight(tableHeight)
@@ -120,16 +120,23 @@ func (p *HTTPPanel) SetSize(width, height int) {
 		totalProportion += prop
 	}
 
-	// Calculate actual widths
+	// Calculate actual widths, ensuring minimum widths
+	minColumnWidths := []int{8, 15, 6, 8, 12} // Minimum widths for each column
+
 	for i, prop := range proportions {
 		if i < len(columns) {
 			relativeWidth := int(float64(tableWidth) * (prop / totalProportion))
-			columns[i].Width = relativeWidth
+			// Ensure column is at least minimum width
+			columns[i].Width = MaxInt(relativeWidth, minColumnWidths[i])
 		}
 	}
 
 	p.healthTable.SetColumns(columns)
 }
+
+// MaxInt returns the maximum of two integers
+
+// TruncateString truncates a string to the given length and adds "..." if truncated
 
 // Update updates the panel
 func (p *HTTPPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -197,7 +204,7 @@ func (p *HTTPPanel) updateTable() {
 
 			rows = append(rows, table.Row{
 				ep.Name,
-				truncateString(ep.URL, 30),
+				TruncateString(ep.URL, 30),
 				statusStyle.Render(status),
 				responseTime,
 				metric.LastChecked.Format("15:04:05"),
@@ -206,7 +213,7 @@ func (p *HTTPPanel) updateTable() {
 			// Endpoint not checked yet
 			rows = append(rows, table.Row{
 				ep.Name,
-				truncateString(ep.URL, 30),
+				TruncateString(ep.URL, 30),
 				"PENDING",
 				"--",
 				"--",

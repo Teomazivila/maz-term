@@ -176,12 +176,24 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.statusBar.SetWidth(msg.Width)
 		}
 
-		// Resize all tabs (accounting for tab bar and status bar)
+		// Calculate the available height for tabs
+		availableHeight := msg.Height
+		if a.tabBar != nil {
+			availableHeight -= 2 // Tab bar height
+		}
+		if a.statusBar != nil {
+			availableHeight -= 2 // Status bar height
+		}
+
+		// Resize all tabs with the new available height
 		for i := range a.tabs {
 			if tab, ok := a.tabs[i].(Tab); ok {
-				tab.SetSize(msg.Width, msg.Height-4)
+				tab.SetSize(msg.Width, availableHeight)
 			}
 		}
+
+		// Return the window size message so it propagates to children
+		return a, func() tea.Msg { return msg }
 	}
 
 	// If we have active tabs, pass the message to the active tab

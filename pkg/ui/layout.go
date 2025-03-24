@@ -179,6 +179,15 @@ func (l *Layout) renderPanel(panel Panel, width, height int) string {
 	var content string
 	title := panel.Title()
 
+	// Set minimum dimensions to ensure panels are visible even with small terminal sizes
+	width = MaxInt(width, 30)   // Minimum width
+	height = MaxInt(height, 10) // Minimum height
+
+	// Style for the panel border and title
+	panelStyle := Theme.Panel.Copy().
+		Width(width).
+		Height(height)
+
 	// Check if panel implements ViewablePanel (tea.Model)
 	if viewable, ok := panel.(ViewablePanel); ok {
 		content = viewable.View()
@@ -192,10 +201,7 @@ func (l *Layout) renderPanel(panel Panel, width, height int) string {
 
 	// Render the panel with title and content
 	styledTitle := Theme.PanelTitle.Render(title)
-	styledPanel := Theme.Panel.
-		Width(width).
-		Height(height).
-		Render(styledTitle + "\n" + content)
+	styledPanel := panelStyle.Render(styledTitle + "\n" + content)
 
 	return styledPanel
 }
@@ -211,3 +217,15 @@ func (l *Layout) Update() {
 		}
 	}
 }
+
+// GetRows returns the rows in the layout (for iterating when closing)
+func (l *Layout) GetRows() []LayoutRow {
+	return l.rows
+}
+
+// GetPanels returns the panels in a row
+func (r *LayoutRow) GetPanels() []Panel {
+	return r.panels
+}
+
+// max returns the maximum of two integers

@@ -364,7 +364,7 @@ func (p *SystemPanel) updateTables() {
 	diskRows := []table.Row{}
 	for _, fs := range p.metrics.Disk.Filesystems {
 		diskRows = append(diskRows, table.Row{
-			truncateString(fs.MountPoint, 10),
+			TruncateString(fs.MountPoint, 10),
 			formatBytes(fs.Total),
 			formatBytes(fs.Used),
 			formatBytes(fs.Free),
@@ -377,7 +377,7 @@ func (p *SystemPanel) updateTables() {
 	netRows := []table.Row{}
 	for _, iface := range p.metrics.Network.Interfaces {
 		netRows = append(netRows, table.Row{
-			truncateString(iface.Name, 12),
+			TruncateString(iface.Name, 12),
 			formatBytes(iface.BytesSent),
 			formatBytes(iface.BytesRecv),
 			strconv.FormatUint(iface.PacketsSent, 10),
@@ -401,13 +401,7 @@ func formatBytes(bytes uint64) string {
 	return fmt.Sprintf("%.1f %ciB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
-// truncateString truncates a string to the given max length
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen-3] + "..."
-}
+// TruncateString truncates a string to the given max length
 
 // min returns the minimum of two integers
 func min(a, b int) int {
