@@ -1,0 +1,38 @@
+general:
+  refresh: 5s
+  theme: default
+  history_retention: 7d
+
+layout:
+  - name: "System Overview"
+    rows:
+      - size: 1
+        panels: ["cpu", "memory", "disk", "network"]
+      - size: 2
+        panels: ["processes"]
+  
+  - name: "Services"
+    rows:
+      - size: 1
+        panels: ["service-status"]
+      - size: 2
+        panels: ["http-endpoints"]
+
+metrics:
+  local:
+    enabled: true
+    
+  endpoints:
+    - name: "Example API"
+      url: "https://example.com/api/health"
+      method: "GET"
+      interval: 30s
+      alert:
+        status_code: 200
+        response_time: 500ms
+  
+  git:
+    repositories:
+      - path: "~/projects/main-service"
+        remote: "origin"
+        branch: "main" 
