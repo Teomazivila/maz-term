@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"sync"
 	"time"
 )
 
@@ -25,6 +26,7 @@ type BaseCollector struct {
 	name     string
 	interval time.Duration
 	running  bool
+	mutex    sync.RWMutex
 	stopChan chan struct{}
 }
 
@@ -44,6 +46,9 @@ func (c *BaseCollector) Name() string {
 
 // Start starts the collector with the specified interval
 func (c *BaseCollector) Start(ctx context.Context, interval time.Duration) error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
 	if c.running {
 		return nil
 	}
@@ -57,6 +62,9 @@ func (c *BaseCollector) Start(ctx context.Context, interval time.Duration) error
 
 // Stop stops the collector
 func (c *BaseCollector) Stop() error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
 	if !c.running {
 		return nil
 	}
@@ -69,5 +77,7 @@ func (c *BaseCollector) Stop() error {
 
 // IsRunning returns whether the collector is running
 func (c *BaseCollector) IsRunning() bool {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
 	return c.running
 }

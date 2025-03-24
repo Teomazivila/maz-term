@@ -12,13 +12,3 @@ type EndpointConfig struct {
 	Timeout        time.Duration     `json:"timeout,omitempty"`
 	Interval       time.Duration     `json:"interval,omitempty"`
 }
-
-// EndpointMetrics represents metrics for an HTTP endpoint check
-type EndpointMetrics struct {
-	Name         string        `json:"name"`
-	URL          string        `json:"url"`
-	StatusCode   int           `json:"status_code"`
-	ResponseTime time.Duration `json:"response_time"`
-	IsUp         bool          `json:"is_up"`
-	LastChecked  time.Time     `json:"last_checked"`
-}
