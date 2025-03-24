@@ -21,13 +21,13 @@
 - [x] Set up testing framework
 
 ### Phase 2: Core UI Framework (4 days)
-- [ ] Implement base TUI application using BubbleTea
-- [ ] Create layout manager for dashboard components
-- [ ] Implement tab navigation system
-- [ ] Design status bar component
-- [ ] Implement configuration loader (YAML)
-- [ ] Add keyboard shortcut system
-- [ ] Create color theme system
+- [x] Implement base TUI application using BubbleTea
+- [x] Create layout manager for dashboard components
+- [x] Implement tab navigation system
+- [x] Design status bar component
+- [x] Implement configuration loader (YAML)
+- [x] Add keyboard shortcut system
+- [x] Create color theme system
 
 ### Phase 3: MVP Integrations (5 days)
 - [ ] Local system metrics collector
