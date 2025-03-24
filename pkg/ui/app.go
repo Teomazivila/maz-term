@@ -29,6 +29,12 @@ type Tab interface {
 	SetSize(width, height int)
 }
 
+// CloseableTab represents a tab that can be closed
+type CloseableTab interface {
+	Tab
+	Close()
+}
+
 // NewApp creates a new application model
 func NewApp() *App {
 	return &App{
@@ -92,7 +98,25 @@ func (a *App) Init() tea.Cmd {
 					Rows: []config.LayoutRow{
 						{
 							Size:   1,
-							Panels: []string{"cpu", "memory", "disk", "network"},
+							Panels: []string{"system"},
+						},
+					},
+				},
+				{
+					Name: "HTTP Endpoints",
+					Rows: []config.LayoutRow{
+						{
+							Size:   1,
+							Panels: []string{"http"},
+						},
+					},
+				},
+				{
+					Name: "Git Repository",
+					Rows: []config.LayoutRow{
+						{
+							Size:   1,
+							Panels: []string{"git"},
 						},
 					},
 				},
@@ -193,6 +217,16 @@ func (a *App) View() string {
 
 	// Combine all views
 	return tabBarView + "\n" + tabView + "\n" + statusBarView
+}
+
+// Close cleans up resources and closes all tabs
+func (a *App) Close() {
+	// Close all tabs that implement CloseableTab
+	for _, tab := range a.tabs {
+		if closeableTab, ok := tab.(CloseableTab); ok {
+			closeableTab.Close()
+		}
+	}
 }
 
 // setupKeyBindings sets up the keyboard shortcuts
