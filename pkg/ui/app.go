@@ -165,8 +165,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 	case tea.WindowSizeMsg:
+		// Debounce window resize events by queueing a single resize operation
 		a.width = msg.Width
 		a.height = msg.Height
+
+		var cmds []tea.Cmd
 
 		// Update component sizes
 		if a.tabBar != nil {
@@ -185,6 +188,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			availableHeight -= 2 // Status bar height
 		}
 
+		// Ensure minimum height
+		availableHeight = MaxInt(availableHeight, 20)
+
 		// Resize all tabs with the new available height
 		for i := range a.tabs {
 			if tab, ok := a.tabs[i].(Tab); ok {
@@ -192,8 +198,18 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Return the window size message so it propagates to children
-		return a, func() tea.Msg { return msg }
+		// Forward window resize to active tab
+		if len(a.tabs) > 0 {
+			if tab, ok := a.tabs[a.activeTab].(tea.Model); ok {
+				var cmd tea.Cmd
+				_, cmd = tab.Update(msg)
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			}
+		}
+
+		return a, tea.Batch(cmds...)
 	}
 
 	// If we have active tabs, pass the message to the active tab

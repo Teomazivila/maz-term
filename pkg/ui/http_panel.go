@@ -14,17 +14,18 @@ import (
 
 // HTTPPanel displays HTTP endpoint health status
 type HTTPPanel struct {
-	collector    *collector.HTTPHealthChecker
-	metrics      map[string]models.EndpointMetrics
-	width        int
-	height       int
-	ctx          context.Context
-	cancelFunc   context.CancelFunc
-	subscription chan map[string]models.EndpointMetrics
-	headerStyle  lipgloss.Style
-	tableStyle   lipgloss.Style
-	healthTable  table.Model
-	endpoints    []models.EndpointConfig
+	collector       *collector.HTTPHealthChecker
+	metrics         map[string]models.EndpointMetrics
+	width           int
+	height          int
+	ctx             context.Context
+	cancelFunc      context.CancelFunc
+	subscription    chan map[string]models.EndpointMetrics
+	headerStyle     lipgloss.Style
+	tableStyle      lipgloss.Style
+	healthTable     table.Model
+	endpoints       []models.EndpointConfig
+	updateDebouncer *Debouncer
 }
 
 // NewHTTPPanel creates a new HTTP endpoint health panel
@@ -65,14 +66,15 @@ func NewHTTPPanel(endpoints []models.EndpointConfig) *HTTPPanel {
 	})
 
 	panel := &HTTPPanel{
-		collector:   c,
-		ctx:         ctx,
-		cancelFunc:  cancel,
-		headerStyle: headerStyle,
-		tableStyle:  tableStyle,
-		healthTable: healthTable,
-		endpoints:   endpoints,
-		metrics:     make(map[string]models.EndpointMetrics),
+		collector:       c,
+		ctx:             ctx,
+		cancelFunc:      cancel,
+		headerStyle:     headerStyle,
+		tableStyle:      tableStyle,
+		healthTable:     healthTable,
+		endpoints:       endpoints,
+		metrics:         make(map[string]models.EndpointMetrics),
+		updateDebouncer: NewDebouncer(100 * time.Millisecond), // 100ms debounce for updates
 	}
 
 	// Start the collector
@@ -141,6 +143,17 @@ func (p *HTTPPanel) SetSize(width, height int) {
 // Update updates the panel
 func (p *HTTPPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
+
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		// Handle window resize
+		p.width = msg.Width
+		p.height = msg.Height
+		p.SetSize(msg.Width, msg.Height)
+		return p, nil
+	}
+
+	// Update table
 	p.healthTable, cmd = p.healthTable.Update(msg)
 	return p, cmd
 }
@@ -190,8 +203,13 @@ func (p *HTTPPanel) Close() {
 // processMetricsUpdates processes metrics updates from the subscription channel
 func (p *HTTPPanel) processMetricsUpdates() {
 	for metrics := range p.subscription {
+		// Store metrics immediately
 		p.metrics = metrics
-		p.updateTable()
+
+		// Debounce the UI update
+		p.updateDebouncer.Debounce(func() {
+			p.updateTable()
+		})
 	}
 }
 

@@ -78,6 +78,15 @@ func (d *DashboardTab) Title() string {
 func (d *DashboardTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 	var cmds []tea.Cmd
 
+	// Handle specific messages
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		// Handle window resize
+		d.SetSize(msg.Width, msg.Height)
+		// Don't forward resize to children here - they'll get it from SetSize
+		return d, nil
+	}
+
 	// Update all panels in the layout
 	for _, row := range d.layout.rows {
 		for i, panel := range row.panels {
@@ -99,7 +108,10 @@ func (d *DashboardTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		}
 	}
 
-	return d, tea.Batch(cmds...)
+	if len(cmds) > 0 {
+		return d, tea.Batch(cmds...)
+	}
+	return d, nil
 }
 
 // View renders the tab
@@ -113,6 +125,11 @@ func (d *DashboardTab) View() string {
 
 // SetSize sets the tab size
 func (d *DashboardTab) SetSize(width, height int) {
+	// Skip resizing if dimensions haven't changed
+	if d.width == width && d.height == height {
+		return
+	}
+
 	// Update our dimensions
 	d.width = width
 	d.height = height

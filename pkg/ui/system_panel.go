@@ -15,22 +15,23 @@ import (
 
 // SystemPanel displays system metrics
 type SystemPanel struct {
-	collector      *collector.SystemMetricsCollector
-	metrics        models.SystemMetrics
-	width          int
-	height         int
-	ctx            context.Context
-	cancelFunc     context.CancelFunc
-	refreshTicker  *time.Ticker
-	subscription   chan models.SystemMetrics
-	headerStyle    lipgloss.Style
-	tableStyle     lipgloss.Style
-	cpuTable       table.Model
-	memoryTable    table.Model
-	diskTable      table.Model
-	networkTable   table.Model
-	currentSection string
-	sections       []string
+	collector       *collector.SystemMetricsCollector
+	metrics         models.SystemMetrics
+	width           int
+	height          int
+	ctx             context.Context
+	cancelFunc      context.CancelFunc
+	refreshTicker   *time.Ticker
+	subscription    chan models.SystemMetrics
+	headerStyle     lipgloss.Style
+	tableStyle      lipgloss.Style
+	cpuTable        table.Model
+	memoryTable     table.Model
+	diskTable       table.Model
+	networkTable    table.Model
+	currentSection  string
+	sections        []string
+	updateDebouncer *Debouncer
 }
 
 // NewSystemPanel creates a new system metrics panel
@@ -136,17 +137,18 @@ func NewSystemPanel() *SystemPanel {
 	})
 
 	panel := &SystemPanel{
-		collector:      c,
-		ctx:            ctx,
-		cancelFunc:     cancel,
-		headerStyle:    headerStyle,
-		tableStyle:     tableStyle,
-		cpuTable:       cpuTable,
-		memoryTable:    memTable,
-		diskTable:      diskTable,
-		networkTable:   netTable,
-		currentSection: "CPU",
-		sections:       []string{"CPU", "Memory", "Disk", "Network"},
+		collector:       c,
+		ctx:             ctx,
+		cancelFunc:      cancel,
+		headerStyle:     headerStyle,
+		tableStyle:      tableStyle,
+		cpuTable:        cpuTable,
+		memoryTable:     memTable,
+		diskTable:       diskTable,
+		networkTable:    netTable,
+		currentSection:  "CPU",
+		sections:        []string{"CPU", "Memory", "Disk", "Network"},
+		updateDebouncer: NewDebouncer(100 * time.Millisecond), // 100ms debounce for updates
 	}
 
 	// Start the collector
@@ -237,6 +239,9 @@ func (p *SystemPanel) SetSize(width, height int) {
 
 // Update updates the panel
 func (p *SystemPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	var cmds []tea.Cmd
+
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -248,22 +253,44 @@ func (p *SystemPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					break
 				}
 			}
+			return p, nil
 		}
+	case tea.WindowSizeMsg:
+		// Handling window resize events
+		p.width = msg.Width
+		p.height = msg.Height
+		p.SetSize(msg.Width, msg.Height)
+		return p, nil
 	}
 
-	var cmd tea.Cmd
+	// Update the current table
 	switch p.currentSection {
 	case "CPU":
 		p.cpuTable, cmd = p.cpuTable.Update(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 	case "Memory":
 		p.memoryTable, cmd = p.memoryTable.Update(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 	case "Disk":
 		p.diskTable, cmd = p.diskTable.Update(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 	case "Network":
 		p.networkTable, cmd = p.networkTable.Update(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 	}
 
-	return p, cmd
+	if len(cmds) > 0 {
+		return p, tea.Batch(cmds...)
+	}
+	return p, nil
 }
 
 // View renders the panel
@@ -320,8 +347,13 @@ func (p *SystemPanel) Close() {
 // processMetricsUpdates processes metrics updates from the subscription channel
 func (p *SystemPanel) processMetricsUpdates() {
 	for metrics := range p.subscription {
+		// Store metrics immediately, but debounce the UI update
 		p.metrics = metrics
-		p.updateTables()
+
+		// Debounce the table update to prevent flickering
+		p.updateDebouncer.Debounce(func() {
+			p.updateTables()
+		})
 	}
 }
 

@@ -71,8 +71,22 @@ func (l *Layout) AddRow(size int, panels ...Panel) {
 
 // SetSize sets the size of the layout
 func (l *Layout) SetSize(width, height int) {
+	// Store the previous dimensions
+	prevWidth := l.width
+	prevHeight := l.height
+
+	// If dimensions haven't changed, don't recalculate
+	if prevWidth == width && prevHeight == height {
+		return
+	}
+
+	// Update dimensions
 	l.width = width
 	l.height = height
+
+	// Set minimum dimensions
+	width = MaxInt(width, 80)
+	height = MaxInt(height, 24)
 
 	// Calculate the total weight of all rows
 	totalWeight := 0
@@ -86,24 +100,29 @@ func (l *Layout) SetSize(width, height int) {
 	}
 
 	// Calculate the available height (excluding spacing)
-	availableHeight := l.height - ((len(l.rows) - 1) * l.spacing)
+	availableHeight := height - ((len(l.rows) - 1) * l.spacing)
+	availableHeight = MaxInt(availableHeight, 10*len(l.rows)) // Ensure minimum height per row
 
 	// Set size for each row's panels
 	for _, row := range l.rows {
 		// Calculate the height for this row
 		rowHeight := (row.size * availableHeight) / totalWeight
+		rowHeight = MaxInt(rowHeight, 10) // Minimum row height
 
 		// Calculate available width for panels (excluding spacing)
-		availableWidth := l.width - ((len(row.panels) - 1) * l.spacing)
+		availableWidth := width - ((len(row.panels) - 1) * l.spacing)
+		availableWidth = MaxInt(availableWidth, 40*len(row.panels)) // Ensure minimum width per panel
 
 		// Set size for each panel
 		for j, panel := range row.panels {
 			// Calculate panel width (equal distribution for now)
 			panelWidth := availableWidth / len(row.panels)
+			panelWidth = MaxInt(panelWidth, 40) // Minimum panel width
 
 			// For the last panel, use remaining width
 			if j == len(row.panels)-1 {
 				panelWidth = availableWidth - (panelWidth * (len(row.panels) - 1))
+				panelWidth = MaxInt(panelWidth, 40) // Ensure last panel has minimum width
 			}
 
 			// Set panel size if it supports it

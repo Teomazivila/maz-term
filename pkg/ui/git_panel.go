@@ -14,17 +14,18 @@ import (
 
 // GitPanel displays Git repository status
 type GitPanel struct {
-	collector    *collector.GitStatusCollector
-	metrics      models.GitRepoMetrics
-	width        int
-	height       int
-	ctx          context.Context
-	cancelFunc   context.CancelFunc
-	subscription chan models.GitRepoMetrics
-	headerStyle  lipgloss.Style
-	tableStyle   lipgloss.Style
-	detailsTable table.Model
-	repoPath     string
+	collector       *collector.GitStatusCollector
+	metrics         models.GitRepoMetrics
+	width           int
+	height          int
+	ctx             context.Context
+	cancelFunc      context.CancelFunc
+	subscription    chan models.GitRepoMetrics
+	headerStyle     lipgloss.Style
+	tableStyle      lipgloss.Style
+	detailsTable    table.Model
+	repoPath        string
+	updateDebouncer *Debouncer
 }
 
 // NewGitPanel creates a new Git repository status panel
@@ -71,13 +72,14 @@ func NewGitPanel(repoPath string) *GitPanel {
 	})
 
 	panel := &GitPanel{
-		collector:    c,
-		ctx:          ctx,
-		cancelFunc:   cancel,
-		headerStyle:  headerStyle,
-		tableStyle:   tableStyle,
-		detailsTable: detailsTable,
-		repoPath:     repoPath,
+		collector:       c,
+		ctx:             ctx,
+		cancelFunc:      cancel,
+		headerStyle:     headerStyle,
+		tableStyle:      tableStyle,
+		detailsTable:    detailsTable,
+		repoPath:        repoPath,
+		updateDebouncer: NewDebouncer(100 * time.Millisecond), // 100ms debounce for updates
 	}
 
 	// Start the collector
@@ -108,14 +110,21 @@ func (p *GitPanel) SetSize(width, height int) {
 	p.width = width
 	p.height = height
 
-	// Update table height
-	p.detailsTable.SetHeight(height - 4) // Account for borders and header
+	// Ensure minimum dimensions
+	width = MaxInt(width, 80)   // Minimum width
+	height = MaxInt(height, 24) // Minimum height
+
+	// Update table height - account for header and borders
+	tableHeight := height - 6
+	tableHeight = MaxInt(tableHeight, 10)
+	p.detailsTable.SetHeight(tableHeight)
 
 	// Update column widths
 	columns := p.detailsTable.Columns()
 	if len(columns) >= 2 {
-		propWidth := width / 3
-		valueWidth := width - propWidth - 4 // Account for borders and padding
+		availWidth := width - 4 // Account for borders
+		propWidth := availWidth / 3
+		valueWidth := availWidth - propWidth - 2 // Account for internal padding
 
 		columns[0].Width = propWidth
 		columns[1].Width = valueWidth
@@ -126,6 +135,17 @@ func (p *GitPanel) SetSize(width, height int) {
 // Update updates the panel
 func (p *GitPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
+
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		// Handle window resize
+		p.width = msg.Width
+		p.height = msg.Height
+		p.SetSize(msg.Width, msg.Height)
+		return p, nil
+	}
+
+	// Update table
 	p.detailsTable, cmd = p.detailsTable.Update(msg)
 	return p, cmd
 }
@@ -172,8 +192,13 @@ func (p *GitPanel) Close() {
 // processMetricsUpdates processes metrics updates from the subscription channel
 func (p *GitPanel) processMetricsUpdates() {
 	for metrics := range p.subscription {
+		// Store metrics immediately
 		p.metrics = metrics
-		p.updateTable()
+
+		// Debounce the UI update
+		p.updateDebouncer.Debounce(func() {
+			p.updateTable()
+		})
 	}
 }
 
