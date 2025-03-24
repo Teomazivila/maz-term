@@ -112,16 +112,28 @@ func (a *TermUIApp) initCollectors() {
 	go a.systemCollector.Start(appCtx, 2*time.Second)
 
 	// HTTP health checker
-	endpoints := []models.EndpointConfig{
-		{Name: "Google", URL: "https://www.google.com", Method: "GET"},
-		{Name: "GitHub", URL: "https://github.com", Method: "GET"},
-		{Name: "Example", URL: "https://example.com", Method: "GET"},
+	// Use endpoints from configuration if available
+	var endpoints []models.EndpointConfig
+	if a.config != nil && len(a.config.Endpoints) > 0 {
+		endpoints = a.config.Endpoints
+	} else {
+		// Fallback to defaults
+		endpoints = []models.EndpointConfig{
+			{Name: "Google", URL: "https://www.google.com", Method: "GET"},
+			{Name: "GitHub", URL: "https://github.com", Method: "GET"},
+			{Name: "Example", URL: "https://example.com", Method: "GET"},
+		}
 	}
 	a.httpCollector = collector.NewHTTPHealthChecker(endpoints)
 	go a.httpCollector.Start(appCtx, 5*time.Second)
 
 	// Git status collector
-	a.gitCollector = collector.NewGitStatusCollector("")
+	// Use git repository path from configuration if available
+	gitPath := ""
+	if a.config != nil && a.config.Git.Repositories != nil && len(a.config.Git.Repositories) > 0 {
+		gitPath = a.config.Git.Repositories[0].Path
+	}
+	a.gitCollector = collector.NewGitStatusCollector(gitPath)
 	go a.gitCollector.Start(appCtx, 5*time.Second)
 }
 

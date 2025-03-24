@@ -9,12 +9,25 @@ import (
 	"github.com/spf13/viper"
 )
 
+// GitConfig represents git repository configuration
+type GitConfig struct {
+	Repositories []GitRepoConfig `mapstructure:"repositories"`
+}
+
+// GitRepoConfig represents a git repository configuration
+type GitRepoConfig struct {
+	Path   string `mapstructure:"path"`
+	Remote string `mapstructure:"remote"`
+	Branch string `mapstructure:"branch"`
+}
+
 // Config represents the application configuration
 type Config struct {
 	General   GeneralConfig           `mapstructure:"general"`
 	Layout    []LayoutTab             `mapstructure:"layout"`
 	Metrics   MetricsConfig           `mapstructure:"metrics"`
 	Endpoints []models.EndpointConfig `mapstructure:"endpoints"`
+	Git       GitConfig               `mapstructure:"git"`
 }
 
 // GeneralConfig contains general application settings
@@ -196,6 +209,15 @@ func DefaultConfig() *Config {
 			{Name: "Google", URL: "https://www.google.com", Method: "GET"},
 			{Name: "GitHub", URL: "https://github.com", Method: "GET"},
 			{Name: "Example", URL: "https://example.com", Method: "GET"},
+		},
+		Git: GitConfig{
+			Repositories: []GitRepoConfig{
+				{
+					Path:   ".",
+					Remote: "origin",
+					Branch: "main",
+				},
+			},
 		},
 	}
 }

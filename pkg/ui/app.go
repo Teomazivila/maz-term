@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/Teomazivila/maz-term/pkg/config"
+	"github.com/Teomazivila/maz-term/pkg/models"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -249,6 +250,20 @@ func DefaultConfig() *config.Config {
 			{
 				Name:   "Git",
 				Panels: []string{"git"},
+			},
+		},
+		Endpoints: []models.EndpointConfig{
+			{Name: "Google", URL: "https://www.google.com", Method: "GET"},
+			{Name: "GitHub", URL: "https://github.com", Method: "GET"},
+			{Name: "Example", URL: "https://example.com", Method: "GET"},
+		},
+		Git: config.GitConfig{
+			Repositories: []config.GitRepoConfig{
+				{
+					Path:   ".",
+					Remote: "origin",
+					Branch: "main",
+				},
 			},
 		},
 	}
