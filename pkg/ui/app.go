@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Teomazivila/maz-term/pkg/collector"
@@ -39,28 +40,37 @@ type StorageInterface interface {
 
 // App represents the main terminal UI application using termui
 type App struct {
-	config           *config.Config
-	activeTabIndex   int
-	tabs             []*Tab
-	statusBar        *widgets.Paragraph
-	grid             *ui.Grid
-	tabBar           *widgets.TabPane
-	running          bool
-	systemCollector  *collector.SystemMetricsCollector
-	httpCollector    *collector.HTTPHealthChecker
-	gitCollector     *collector.GitStatusCollector
-	termWidth        int
-	termHeight       int
-	showHelp         bool
-	helpPanel        *widgets.Paragraph
-	storage          StorageInterface
-	exportInProgress bool
-	historyRange     time.Duration            // Selected time range for history tab
-	historyRangeIdx  int                      // Index of currently selected range option
-	showAnnotations  bool                     // Whether to show event annotations
-	annotations      []models.EventAnnotation // Cached event annotations
-	addingAnnotation bool                     // Whether we're currently adding a new annotation
-	annotationForm   *widgets.Paragraph       // Form for adding new annotations
+	config            *config.Config
+	activeTabIndex    int
+	tabs              []*Tab
+	statusBar         *widgets.Paragraph
+	grid              *ui.Grid
+	tabBar            *widgets.TabPane
+	running           bool
+	systemCollector   *collector.SystemMetricsCollector
+	httpCollector     *collector.HTTPHealthChecker
+	gitCollector      *collector.GitStatusCollector
+	termWidth         int
+	termHeight        int
+	showHelp          bool
+	helpPanel         *widgets.Paragraph
+	storage           StorageInterface
+	exportInProgress  bool
+	historyRange      time.Duration            // Selected time range for history tab
+	historyRangeIdx   int                      // Index of currently selected range option
+	showAnnotations   bool                     // Whether to show event annotations
+	annotations       []models.EventAnnotation // Cached event annotations
+	addingAnnotation  bool                     // Whether we're currently adding a new annotation
+	annotationForm    *widgets.Paragraph       // Form for adding new annotations
+	zoomMode          bool                     // Whether we're in zoom mode
+	zoomActiveChart   int                      // Index of chart being zoomed
+	zoomStartPercent  float64                  // Start position of zoom region (percentage)
+	zoomEndPercent    float64                  // End position of zoom region (percentage)
+	zoomStartTime     time.Time                // Start time for zoomed view
+	zoomEndTime       time.Time                // End time for zoomed view
+	comparisonMode    bool                     // Whether comparison mode is active
+	primaryMetric     string                   // Primary metric being compared
+	comparisonMetrics []string                 // List of metrics being compared
 }
 
 // Tab represents a tab in the terminal UI
@@ -233,6 +243,15 @@ func (a *App) createUI() {
 [1-4] Go to Tab Directly    [e] Export Data to CSV       []] Increase Time Range
 [?] Toggle This Help        [q] Quit Application         [a] Toggle Annotations
 [Esc] Close Help/Panels                                  [n] Add New Annotation
+                                                        [z] Enter Zoom Mode
+                                                        [c] Toggle Comparison Mode
+
+[Zoom Mode]
+[←/→] Move Zoom Window      [↑/↓] Resize Zoom Window     [Enter] Apply Zoom
+[Esc] Exit Zoom Mode
+
+[Comparison Mode]
+[1-4] Select Primary Metric [Space] Toggle Comparison    [Esc] Exit Comparison Mode
 
 [Tab Information]
 System - CPU, memory, disk usage and system stats
@@ -702,6 +721,18 @@ func (a *App) configureHistoryTabGrid(tab *Tab, x1, y1, x2, y2 int) {
 
 // handleEvent handles UI events
 func (a *App) handleEvent(e ui.Event) {
+	// If in zoom mode, handle zoom-specific controls
+	if a.zoomMode {
+		a.handleZoomModeEvent(e)
+		return
+	}
+
+	// If in comparison mode, handle comparison-specific controls
+	if a.comparisonMode {
+		a.handleComparisonModeEvent(e)
+		return
+	}
+
 	switch e.ID {
 	case "q", "<C-c>":
 		a.running = false
@@ -742,6 +773,12 @@ func (a *App) handleEvent(e ui.Event) {
 		}
 	case "r":
 		if !a.showHelp {
+			// Check if we're in a zoomed view
+			if a.tabBar.ActiveTabIndex == 3 && a.zoomEndTime.After(a.zoomStartTime) {
+				// Reset zoom to default time range
+				a.resetZoom()
+			}
+
 			// Force data refresh
 			a.updateData()
 			a.updateLayout()
@@ -779,7 +816,162 @@ func (a *App) handleEvent(e ui.Event) {
 			a.showAddAnnotationForm()
 			a.updateLayout()
 		}
+	case "z":
+		// Enter zoom mode for historical charts
+		if !a.showHelp && a.tabBar.ActiveTabIndex == 3 && !a.addingAnnotation {
+			a.enterZoomMode()
+			a.updateLayout()
+		}
+	case "c":
+		// Enter comparison mode in history tab
+		if !a.showHelp && a.tabBar.ActiveTabIndex == 3 && !a.addingAnnotation && !a.zoomMode {
+			a.enterComparisonMode()
+			a.updateLayout()
+		}
 	}
+}
+
+// handleZoomModeEvent handles events when in zoom mode
+func (a *App) handleZoomModeEvent(e ui.Event) {
+	switch e.ID {
+	case "<Escape>":
+		// Exit zoom mode
+		a.zoomMode = false
+		a.updateLayout()
+	case "<Left>":
+		// Move zoom window left
+		if a.zoomStartPercent > 0.05 {
+			delta := 0.05
+			a.zoomStartPercent -= delta
+			a.zoomEndPercent -= delta
+			a.updateZoomIndicator()
+		}
+	case "<Right>":
+		// Move zoom window right
+		if a.zoomEndPercent < 0.95 {
+			delta := 0.05
+			a.zoomStartPercent += delta
+			a.zoomEndPercent += delta
+			a.updateZoomIndicator()
+		}
+	case "<Up>":
+		// Increase zoom window size
+		if a.zoomEndPercent-a.zoomStartPercent < 0.9 {
+			a.zoomStartPercent -= 0.05
+			a.zoomEndPercent += 0.05
+
+			// Ensure within bounds
+			if a.zoomStartPercent < 0 {
+				a.zoomStartPercent = 0
+			}
+			if a.zoomEndPercent > 1 {
+				a.zoomEndPercent = 1
+			}
+
+			a.updateZoomIndicator()
+		}
+	case "<Down>":
+		// Decrease zoom window size
+		if a.zoomEndPercent-a.zoomStartPercent > 0.1 {
+			a.zoomStartPercent += 0.05
+			a.zoomEndPercent -= 0.05
+			a.updateZoomIndicator()
+		}
+	case "<Enter>":
+		// Apply zoom
+		a.applyZoom()
+		a.zoomMode = false
+		a.updateData()
+		a.updateLayout()
+	}
+}
+
+// enterZoomMode enters zoom mode for a chart
+func (a *App) enterZoomMode() {
+	a.zoomMode = true
+
+	// Default to first chart (CPU)
+	a.zoomActiveChart = 2
+
+	// Set initial zoom window to middle 50%
+	a.zoomStartPercent = 0.25
+	a.zoomEndPercent = 0.75
+
+	// Calculate start and end times based on current time range
+	now := time.Now()
+	rangeStart := now.Add(-a.historyRange)
+
+	totalDuration := now.Sub(rangeStart)
+	a.zoomStartTime = rangeStart.Add(time.Duration(float64(totalDuration) * a.zoomStartPercent))
+	a.zoomEndTime = rangeStart.Add(time.Duration(float64(totalDuration) * a.zoomEndPercent))
+
+	// Update status bar to show zoom mode instructions
+	a.statusBar.Text = "ZOOM MODE: Use [←/→] to move, [↑/↓] to resize, [Enter] to apply, [Esc] to cancel"
+	ui.Render(a.statusBar)
+
+	// Add zoom indicators to the active chart
+	a.updateZoomIndicator()
+}
+
+// updateZoomIndicator updates the visual indicator for zoom mode
+func (a *App) updateZoomIndicator() {
+	if !a.zoomMode {
+		return
+	}
+
+	// Get the active history tab
+	tab := a.tabs[3]
+
+	// Update all charts with zoom indicators
+	for i := 2; i <= 4; i++ {
+		if plot, ok := tab.widgets[i].(*widgets.Plot); ok {
+			// Create a highlighted region representing the zoom window
+			// For now, just update the title to show we're in zoom mode
+			if i == a.zoomActiveChart {
+				plot.Title = fmt.Sprintf("%s [ZOOM %.0f%%-%.0f%%](fg:yellow)",
+					plot.Title, a.zoomStartPercent*100, a.zoomEndPercent*100)
+			} else {
+				originalTitle := plot.Title
+				if idx := strings.Index(originalTitle, " [ZOOM"); idx > 0 {
+					originalTitle = originalTitle[:idx]
+				}
+				plot.Title = originalTitle
+			}
+			ui.Render(plot)
+		}
+	}
+
+	// Calculate zoom time range for status display
+	now := time.Now()
+	rangeStart := now.Add(-a.historyRange)
+	totalDuration := now.Sub(rangeStart)
+
+	zoomStartTime := rangeStart.Add(time.Duration(float64(totalDuration) * a.zoomStartPercent))
+	zoomEndTime := rangeStart.Add(time.Duration(float64(totalDuration) * a.zoomEndPercent))
+
+	a.zoomStartTime = zoomStartTime
+	a.zoomEndTime = zoomEndTime
+
+	// Format for display
+	startTimeStr := zoomStartTime.Format("15:04:05")
+	endTimeStr := zoomEndTime.Format("15:04:05")
+
+	a.statusBar.Text = fmt.Sprintf("ZOOM MODE: %s to %s | Use [←/→] to move, [↑/↓] to resize, [Enter] to apply, [Esc] to cancel",
+		startTimeStr, endTimeStr)
+}
+
+// applyZoom applies the current zoom selection
+func (a *App) applyZoom() {
+	// Create a custom time range based on zoom selection
+	zoomDuration := a.zoomEndTime.Sub(a.zoomStartTime)
+
+	// Set the new history range to the zoomed time range
+	a.historyRange = zoomDuration
+
+	// Update status to show we're using a custom time range
+	a.statusBar.Text = fmt.Sprintf("Zoomed view: %s to %s | Press 'r' to reset zoom",
+		a.zoomStartTime.Format("15:04:05"),
+		a.zoomEndTime.Format("15:04:05"))
 }
 
 // updateData updates the data displayed in the UI
@@ -1117,16 +1309,22 @@ func (a *App) updateHistoryTabData() {
 	// Update time range selector
 	timeRangeSelector, ok := tab.widgets[0].(*widgets.Paragraph)
 	if ok {
-		timeRangeSelector.Text = a.getTimeRangeDisplay()
+		// If we're in a zoomed view, show custom zoom info
+		if a.zoomMode {
+			timeRangeSelector.Text = fmt.Sprintf("Time Range: ZOOM MODE (selecting %.0f%%-%.0f%%)",
+				a.zoomStartPercent*100, a.zoomEndPercent*100)
+		} else {
+			timeRangeSelector.Text = a.getTimeRangeDisplay()
+		}
 	}
 
 	// Update annotation controls
 	annotationControls, ok := tab.widgets[1].(*widgets.Paragraph)
 	if ok {
 		if a.showAnnotations {
-			annotationControls.Text = "Annotations: [ON](fg:green) Press [a] to toggle, [n] to add new"
+			annotationControls.Text = "Annotations: [ON](fg:green) Press [a] to toggle, [n] to add new, [z] to zoom"
 		} else {
-			annotationControls.Text = "Annotations: [OFF](fg:red) Press [a] to toggle, [n] to add new"
+			annotationControls.Text = "Annotations: [OFF](fg:red) Press [a] to toggle, [n] to add new, [z] to zoom"
 		}
 	}
 
@@ -1175,6 +1373,16 @@ func (a *App) updateHistoryTabData() {
 
 			// Set title with annotations if enabled
 			baseTitle := fmt.Sprintf("CPU Usage History (Last %s)", a.formatDuration(historyPeriod))
+
+			// If zoomed, show zoomed time range
+			if !a.zoomMode && a.zoomEndTime.After(a.zoomStartTime) {
+				zoomDuration := a.zoomEndTime.Sub(a.zoomStartTime)
+				if zoomDuration > 0 {
+					baseTitle = fmt.Sprintf("CPU Usage History (Zoomed: %s)",
+						a.formatDuration(zoomDuration))
+				}
+			}
+
 			if a.showAnnotations && len(a.annotations) > 0 {
 				// Count relevant annotations
 				cpuAnnotations := a.getAnnotationCount("cpu")
@@ -1223,6 +1431,16 @@ func (a *App) updateHistoryTabData() {
 
 			// Set title with annotations if enabled
 			baseTitle := fmt.Sprintf("Memory Usage History (Last %s)", a.formatDuration(historyPeriod))
+
+			// If zoomed, show zoomed time range
+			if !a.zoomMode && a.zoomEndTime.After(a.zoomStartTime) {
+				zoomDuration := a.zoomEndTime.Sub(a.zoomStartTime)
+				if zoomDuration > 0 {
+					baseTitle = fmt.Sprintf("Memory Usage History (Zoomed: %s)",
+						a.formatDuration(zoomDuration))
+				}
+			}
+
 			if a.showAnnotations && len(a.annotations) > 0 {
 				// Count relevant annotations
 				memAnnotations := a.getAnnotationCount("memory")
@@ -1292,6 +1510,16 @@ func (a *App) updateHistoryTabData() {
 
 			// Set title with annotations if enabled
 			baseTitle := fmt.Sprintf("HTTP Response Time History (Last %s)", a.formatDuration(historyPeriod))
+
+			// If zoomed, show zoomed time range
+			if !a.zoomMode && a.zoomEndTime.After(a.zoomStartTime) {
+				zoomDuration := a.zoomEndTime.Sub(a.zoomStartTime)
+				if zoomDuration > 0 {
+					baseTitle = fmt.Sprintf("HTTP Response Time History (Zoomed: %s)",
+						a.formatDuration(zoomDuration))
+				}
+			}
+
 			if a.showAnnotations && len(a.annotations) > 0 {
 				// Count relevant annotations
 				httpAnnotations := a.getAnnotationCount("http")
@@ -1351,6 +1579,16 @@ func (a *App) updateHistoryTabData() {
 
 			// Set title with annotations if enabled
 			baseTitle := fmt.Sprintf("Endpoints Availability (Last %s)", a.formatDuration(historyPeriod))
+
+			// If zoomed, show zoomed time range
+			if !a.zoomMode && a.zoomEndTime.After(a.zoomStartTime) {
+				zoomDuration := a.zoomEndTime.Sub(a.zoomStartTime)
+				if zoomDuration > 0 {
+					baseTitle = fmt.Sprintf("Endpoints Availability (Zoomed: %s)",
+						a.formatDuration(zoomDuration))
+				}
+			}
+
 			if a.showAnnotations && len(a.annotations) > 0 {
 				// Count relevant annotations
 				availAnnotations := a.getAnnotationCount("availability")
@@ -1562,4 +1800,293 @@ func (a *App) getAnnotationCount(tag string) int {
 		}
 	}
 	return count
+}
+
+// resetZoom resets from a zoomed view back to the original time range
+func (a *App) resetZoom() {
+	// Reset the time range to the corresponding predefined option
+	a.historyRange = a.getTimeRangeOptions()[a.historyRangeIdx]
+
+	// Clear zoom times
+	a.zoomStartTime = time.Time{}
+	a.zoomEndTime = time.Time{}
+
+	// Update status bar
+	a.statusBar.Text = fmt.Sprintf("Zoom reset to %s | Time: %s",
+		a.formatDuration(a.historyRange),
+		time.Now().Format("15:04:05"))
+	ui.Render(a.statusBar)
+}
+
+// handleComparisonModeEvent handles events when in comparison mode
+func (a *App) handleComparisonModeEvent(e ui.Event) {
+	switch e.ID {
+	case "<Escape>":
+		// Exit comparison mode
+		a.exitComparisonMode()
+		a.updateLayout()
+	case "1":
+		// Select CPU as primary metric
+		a.primaryMetric = "cpu"
+		a.updateComparisonView()
+	case "2":
+		// Select Memory as primary metric
+		a.primaryMetric = "memory"
+		a.updateComparisonView()
+	case "3":
+		// Select HTTP as primary metric
+		a.primaryMetric = "http"
+		a.updateComparisonView()
+	case "4":
+		// Select Availability as primary metric
+		a.primaryMetric = "availability"
+		a.updateComparisonView()
+	case "<Space>":
+		// Toggle individual metrics for comparison
+		a.toggleComparisonMetric()
+		a.updateComparisonView()
+	}
+}
+
+// enterComparisonMode enters comparison mode for metrics
+func (a *App) enterComparisonMode() {
+	a.comparisonMode = true
+
+	// Default to CPU as primary metric
+	a.primaryMetric = "cpu"
+
+	// Default comparisons
+	a.comparisonMetrics = []string{"memory"}
+
+	// Update status bar
+	a.statusBar.Text = "COMPARISON MODE: Press [1-4] to select primary metric, [Space] to toggle comparisons, [Esc] to exit"
+	ui.Render(a.statusBar)
+
+	// Update the view
+	a.updateComparisonView()
+}
+
+// exitComparisonMode exits comparison mode
+func (a *App) exitComparisonMode() {
+	a.comparisonMode = false
+	a.primaryMetric = ""
+	a.comparisonMetrics = nil
+
+	// Reset status bar
+	a.statusBar.Text = fmt.Sprintf("Status: Ready | Time: %s | Press [?] for Help | Tab %d/%d: %s",
+		time.Now().Format("15:04:05"),
+		a.tabBar.ActiveTabIndex+1,
+		len(a.tabs),
+		a.tabs[a.tabBar.ActiveTabIndex].name)
+}
+
+// toggleComparisonMetric toggles a metric for comparison
+func (a *App) toggleComparisonMetric() {
+	// List of all possible metrics
+	allMetrics := []string{"cpu", "memory", "http", "availability"}
+
+	// For now, we just rotate through possible comparison combinations
+	// In a real implementation, we would have a UI to select specific metrics
+
+	// Remove primary metric from possible comparisons
+	possibleComparisons := []string{}
+	for _, m := range allMetrics {
+		if m != a.primaryMetric {
+			possibleComparisons = append(possibleComparisons, m)
+		}
+	}
+
+	// Simple rotation through comparison combinations
+	switch len(a.comparisonMetrics) {
+	case 0:
+		// Add first comparison
+		a.comparisonMetrics = []string{possibleComparisons[0]}
+	case 1:
+		// Add second comparison
+		a.comparisonMetrics = []string{possibleComparisons[0], possibleComparisons[1]}
+	case 2:
+		// Add third comparison
+		a.comparisonMetrics = []string{possibleComparisons[0], possibleComparisons[1], possibleComparisons[2]}
+	default:
+		// Start over with no comparisons
+		a.comparisonMetrics = []string{}
+	}
+}
+
+// updateComparisonView updates the comparison view
+func (a *App) updateComparisonView() {
+	if !a.comparisonMode {
+		return
+	}
+
+	// Get the active history tab
+	tab := a.tabs[3]
+
+	// Update the status bar with current comparison info
+	comparisonInfo := fmt.Sprintf("COMPARISON MODE: Primary: [%s](fg:cyan) | Comparing with: ", a.primaryMetric)
+
+	if len(a.comparisonMetrics) == 0 {
+		comparisonInfo += "[none](fg:yellow)"
+	} else {
+		for i, metric := range a.comparisonMetrics {
+			if i > 0 {
+				comparisonInfo += ", "
+			}
+			comparisonInfo += fmt.Sprintf("[%s](fg:green)", metric)
+		}
+	}
+
+	a.statusBar.Text = comparisonInfo
+	ui.Render(a.statusBar)
+
+	// Update the time range selector to show comparison mode
+	timeRangeSelector, ok := tab.widgets[0].(*widgets.Paragraph)
+	if ok {
+		timeRangeSelector.Text = fmt.Sprintf("Time Range: %s | COMPARISON MODE: Primary metric: %s",
+			a.formatDuration(a.historyRange), a.primaryMetric)
+		ui.Render(timeRangeSelector)
+	}
+
+	// Create a combined plot for the comparison
+	combinedPlot, ok := tab.widgets[2].(*widgets.Plot)
+	if ok {
+		// Update the plot title
+		combinedPlot.Title = fmt.Sprintf("Metric Comparison - Primary: %s (Last %s)",
+			strings.ToUpper(a.primaryMetric), a.formatDuration(a.historyRange))
+
+		// Generate data for primary metric
+		primaryData := a.getMetricData(a.primaryMetric)
+
+		// Create the data array starting with primary
+		plotData := [][]float64{primaryData}
+
+		// Add comparison metrics
+		for _, metric := range a.comparisonMetrics {
+			plotData = append(plotData, a.getMetricData(metric))
+		}
+
+		// Set line colors based on metrics
+		combinedPlot.LineColors = a.getMetricColors(a.primaryMetric, a.comparisonMetrics)
+
+		// Update the plot data
+		combinedPlot.Data = plotData
+		ui.Render(combinedPlot)
+	}
+
+	// Hide other plots in comparison mode
+	for i := 3; i <= 5; i++ {
+		widget := tab.widgets[i]
+
+		// Make the widget invisible in comparison mode
+		// For now, we'll just change the title to indicate it's hidden
+		if plot, ok := widget.(*widgets.Plot); ok {
+			plot.Title = "[HIDDEN IN COMPARISON MODE](fg:yellow)"
+			ui.Render(plot)
+		} else if barChart, ok := widget.(*widgets.BarChart); ok {
+			barChart.Title = "[HIDDEN IN COMPARISON MODE](fg:yellow)"
+			ui.Render(barChart)
+		}
+	}
+}
+
+// getMetricData gets the data for a specific metric
+func (a *App) getMetricData(metricName string) []float64 {
+	// Default return value with empty data
+	defaultData := []float64{0, 0, 0}
+
+	// Skip if storage is not available
+	if a.storage == nil {
+		return defaultData
+	}
+
+	historyPeriod := a.historyRange
+	pointCount := 100
+
+	var data []float64
+	var err error
+	var history []models.TimeSeriesPoint
+
+	switch metricName {
+	case "cpu":
+		history, err = a.storage.GetCPUUsageHistory(historyPeriod, pointCount)
+	case "memory":
+		history, err = a.storage.GetMemoryUsageHistory(historyPeriod, pointCount)
+	case "http":
+		// For HTTP, we'll use the first endpoint as an example
+		endpoints, err := a.storage.GetAllEndpoints()
+		if err != nil || len(endpoints) == 0 {
+			return defaultData
+		}
+		history, err = a.storage.GetHTTPResponseTimeHistory(endpoints[0], historyPeriod, pointCount)
+	case "availability":
+		// For availability, we'll use the first endpoint as an example
+		endpoints, err := a.storage.GetAllEndpoints()
+		if err != nil || len(endpoints) == 0 {
+			return defaultData
+		}
+		history, err = a.storage.GetHTTPAvailabilityHistory(endpoints[0], historyPeriod, pointCount)
+	default:
+		return defaultData
+	}
+
+	if err != nil || len(history) == 0 {
+		return defaultData
+	}
+
+	// Convert time series data to plot data
+	data = make([]float64, len(history))
+	for i, point := range history {
+		data[i] = point.Value
+	}
+
+	// Ensure we have at least 3 data points (for rendering)
+	if len(data) < 3 {
+		if len(data) == 1 {
+			data = []float64{data[0], data[0], data[0]}
+		} else if len(data) == 2 {
+			data = []float64{data[0], data[1], data[1]}
+		} else {
+			data = defaultData
+		}
+	}
+
+	return data
+}
+
+// getMetricColors returns colors for metrics
+func (a *App) getMetricColors(primary string, comparisons []string) []ui.Color {
+	// Base set of colors
+	colors := []ui.Color{}
+
+	// Primary metric is always the first and gets a specific color
+	switch primary {
+	case "cpu":
+		colors = append(colors, ui.ColorBlue)
+	case "memory":
+		colors = append(colors, ui.ColorGreen)
+	case "http":
+		colors = append(colors, ui.ColorRed)
+	case "availability":
+		colors = append(colors, ui.ColorYellow)
+	default:
+		colors = append(colors, ui.ColorCyan)
+	}
+
+	// Additional colors for comparison metrics
+	for _, metric := range comparisons {
+		switch metric {
+		case "cpu":
+			colors = append(colors, ui.ColorBlue)
+		case "memory":
+			colors = append(colors, ui.ColorGreen)
+		case "http":
+			colors = append(colors, ui.ColorRed)
+		case "availability":
+			colors = append(colors, ui.ColorYellow)
+		default:
+			colors = append(colors, ui.ColorWhite)
+		}
+	}
+
+	return colors
 }

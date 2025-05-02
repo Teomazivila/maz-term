@@ -3,6 +3,7 @@ package storage
 import (
 	"database/sql"
 	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"time"
@@ -282,6 +283,143 @@ func (db *Database) GetEventAnnotations(period time.Duration) ([]models.EventAnn
 	}
 
 	return filteredAnnotations, nil
+}
+
+// SeedDemoDataIfEmpty checks if the database is empty and seeds it with demo data
+func (d *Database) SeedDemoDataIfEmpty() error {
+	// Check if system_metrics table is empty
+	var count int
+	err := d.db.QueryRow("SELECT COUNT(*) FROM system_metrics").Scan(&count)
+	if err != nil {
+		return fmt.Errorf("failed to check if system_metrics table is empty: %w", err)
+	}
+
+	// If not empty, return
+	if count > 0 {
+		return nil
+	}
+
+	fmt.Println("Database is empty. Seeding with demo data...")
+
+	// Begin a transaction
+	tx, err := d.db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Generate demo data for the past 24 hours
+	now := time.Now()
+
+	// Seed system metrics
+	for i := 0; i < 100; i++ {
+		timestamp := now.Add(-time.Duration(i*15) * time.Minute).Unix()
+		cpuUsage := 20.0 + float64(i%30)               // Generate fluctuating CPU usage
+		memoryUsage := 45.0 + float64(i%20)            // Generate fluctuating memory usage
+		memoryTotal := uint64(16 * 1024 * 1024 * 1024) // 16GB
+		memoryUsed := uint64(float64(memoryTotal) * memoryUsage / 100.0)
+
+		_, err = tx.Exec(
+			"INSERT INTO system_metrics (timestamp, cpu_usage, memory_usage, memory_total, memory_used) VALUES (?, ?, ?, ?, ?)",
+			timestamp,
+			cpuUsage,
+			memoryUsage,
+			memoryTotal,
+			memoryUsed,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to insert demo system metrics: %w", err)
+		}
+	}
+
+	// Seed disk metrics
+	mountPoints := []string{"/", "/home", "/var"}
+	for i := 0; i < 100; i++ {
+		timestamp := now.Add(-time.Duration(i*15) * time.Minute).Unix()
+
+		for _, mp := range mountPoints {
+			diskUsage := 30.0 + float64(i%25)         // Generate fluctuating disk usage
+			total := uint64(500 * 1024 * 1024 * 1024) // 500GB
+			used := uint64(float64(total) * diskUsage / 100.0)
+
+			_, err = tx.Exec(
+				"INSERT INTO disk_metrics (timestamp, mount_point, total, used, usage_percent) VALUES (?, ?, ?, ?, ?)",
+				timestamp,
+				mp,
+				total,
+				used,
+				diskUsage,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to insert demo disk metrics: %w", err)
+			}
+		}
+	}
+
+	// Seed HTTP metrics
+	endpoints := []struct {
+		name string
+		url  string
+	}{
+		{"Google", "https://www.google.com"},
+		{"GitHub", "https://github.com"},
+		{"Example", "https://example.com"},
+	}
+
+	for i := 0; i < 100; i++ {
+		timestamp := now.Add(-time.Duration(i*15) * time.Minute).Unix()
+
+		for _, ep := range endpoints {
+			responseTime := 80 + i%150 // 80-230ms
+			isUp := rand.Intn(20) > 0  // 95% uptime
+			statusCode := 200
+			if !isUp {
+				statusCode = 500
+			}
+
+			_, err = tx.Exec(
+				"INSERT INTO http_metrics (timestamp, endpoint_name, endpoint_url, status_code, response_time, is_up) VALUES (?, ?, ?, ?, ?, ?)",
+				timestamp,
+				ep.name,
+				ep.url,
+				statusCode,
+				responseTime,
+				isUp,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to insert demo HTTP metrics: %w", err)
+			}
+		}
+	}
+
+	// Seed Git metrics
+	for i := 0; i < 100; i++ {
+		timestamp := now.Add(-time.Duration(i*15) * time.Minute).Unix()
+		commitCount := 100 + i/2 // Increasing commit count
+		modifiedFiles := i % 8   // Fluctuating modified files
+		pendingCommits := i % 5  // Fluctuating pending commits
+
+		_, err = tx.Exec(
+			"INSERT INTO git_metrics (timestamp, repo_name, branch, commit_count, modified_files, pending_commits) VALUES (?, ?, ?, ?, ?, ?)",
+			timestamp,
+			"current_repo",
+			"main",
+			commitCount,
+			modifiedFiles,
+			pendingCommits,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to insert demo Git metrics: %w", err)
+		}
+	}
+
+	// Commit the transaction
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	fmt.Println("Successfully seeded database with demo data")
+	return nil
 }
 
 // AddEventAnnotation adds a new event annotation to storage

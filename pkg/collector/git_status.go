@@ -30,21 +30,20 @@ func NewGitStatusCollector(repoPath string) *GitStatusCollector {
 		repoPath, _ = os.Getwd()
 	}
 
-	repoName := filepath.Base(repoPath)
+	// Use the full path as the repository name instead of just the last component
 	return &GitStatusCollector{
 		BaseCollector: NewBaseCollector("git_status"),
 		repoPath:      repoPath,
-		metrics:       models.GitRepoMetrics{Name: repoName},
+		metrics:       models.GitRepoMetrics{Name: repoPath},
 		subscription:  []chan models.GitRepoMetrics{},
 	}
 }
 
 // Collect gathers Git repository status
 func (c *GitStatusCollector) Collect(ctx context.Context) (interface{}, error) {
-	// Initialize metrics with repo name
-	repoName := filepath.Base(c.repoPath)
+	// Initialize metrics with repo path as name
 	metrics := models.GitRepoMetrics{
-		Name: repoName,
+		Name: c.repoPath,
 	}
 
 	// Check if the repo exists and get status

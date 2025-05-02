@@ -44,6 +44,12 @@ func main() {
 			fmt.Printf("Error initializing database: %v, metrics will not be stored\n", err)
 		} else {
 			fmt.Println("Database initialized successfully")
+
+			// Seed the database with demo data if it's empty
+			if err := db.SeedDemoDataIfEmpty(); err != nil {
+				fmt.Printf("Warning: Failed to seed demo data: %v\n", err)
+			}
+
 			storageAdapter = storage.NewAdapter(db)
 		}
 	}
