@@ -67,6 +67,9 @@ func (c *GitStatusCollector) Collect(ctx context.Context) (interface{}, error) {
 		}
 	}
 
+	// Store the Git metrics in the database
+	c.StoreData("", metrics, "git")
+
 	return metrics, nil
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/Teomazivila/maz-term/internal/storage"
 	"github.com/Teomazivila/maz-term/pkg/config"
 	"github.com/Teomazivila/maz-term/pkg/ui"
 )
@@ -16,6 +17,7 @@ func main() {
 	// Parse command line flags
 	configPath := flag.String("config", "", "Path to configuration file")
 	versionFlag := flag.Bool("version", false, "Print version information and exit")
+	noStorageFlag := flag.Bool("no-storage", false, "Disable metrics storage")
 	flag.Parse()
 
 	if *versionFlag {
@@ -33,8 +35,21 @@ func main() {
 		cfg = config.DefaultConfig()
 	}
 
+	// Initialize storage if enabled
+	var storageAdapter *storage.Adapter
+	if !*noStorageFlag {
+		// Initialize SQLite database
+		db, err := storage.New(nil) // Use default configuration
+		if err != nil {
+			fmt.Printf("Error initializing database: %v, metrics will not be stored\n", err)
+		} else {
+			fmt.Println("Database initialized successfully")
+			storageAdapter = storage.NewAdapter(db)
+		}
+	}
+
 	// Run the TermUI implementation
-	if err := ui.StartApp(cfg); err != nil {
+	if err := ui.StartApp(cfg, storageAdapter); err != nil {
 		fmt.Printf("Error running application: %v\n", err)
 		os.Exit(1)
 	}

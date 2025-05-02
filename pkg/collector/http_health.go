@@ -56,6 +56,9 @@ func (c *HTTPHealthChecker) Collect(ctx context.Context) (interface{}, error) {
 			mutex.Lock()
 			metrics[ep.Name] = metric
 			mutex.Unlock()
+
+			// Store metrics for this endpoint
+			c.StoreData(ep.Name, metric, "http")
 		}(endpoint)
 	}
 

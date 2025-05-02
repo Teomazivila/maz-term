@@ -103,6 +103,9 @@ func (c *SystemMetricsCollector) Collect(ctx context.Context) (interface{}, erro
 		}
 	}
 
+	// Store the metrics in the database
+	c.StoreData("", metrics, "system")
+
 	return metrics, nil
 }
 

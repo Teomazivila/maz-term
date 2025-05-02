@@ -3,9 +3,13 @@ package config
 import (
 	"fmt"
 	"os"
+	"reflect"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Teomazivila/maz-term/pkg/models"
+	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
 )
 
@@ -117,11 +121,65 @@ func LoadConfig(configPath string) (*Config, error) {
 	}
 
 	var config Config
-	if err := v.Unmarshal(&config); err != nil {
+
+	// Setup decoder with custom options for duration parsing
+	decoderConfig := &mapstructure.DecoderConfig{
+		Result:           &config,
+		WeaklyTypedInput: true,
+		DecodeHook: mapstructure.ComposeDecodeHookFunc(
+			mapstructure.StringToTimeDurationHookFunc(),
+			StringToCustomDurationHookFunc(),
+		),
+	}
+
+	decoder, err := mapstructure.NewDecoder(decoderConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create decoder: %w", err)
+	}
+
+	if err := decoder.Decode(v.AllSettings()); err != nil {
 		return nil, fmt.Errorf("unable to decode config into struct: %w", err)
 	}
 
 	return &config, nil
+}
+
+// StringToCustomDurationHookFunc returns a DecodeHookFunc that converts strings
+// to time.Duration, supporting extended formats like "7d" or "1w"
+func StringToCustomDurationHookFunc() mapstructure.DecodeHookFunc {
+	return func(f reflect.Type, t reflect.Type, data interface{}) (interface{}, error) {
+		// Check if the input type is string and the target type is time.Duration
+		if f.Kind() != reflect.String || t != reflect.TypeOf(time.Duration(0)) {
+			return data, nil
+		}
+
+		// Parse the string into a duration
+		durationStr := data.(string)
+
+		// First try standard duration parsing (like "5s", "10m", etc.)
+		if duration, err := time.ParseDuration(durationStr); err == nil {
+			return duration, nil
+		}
+
+		// Handle extended formats: d (days) and w (weeks)
+		if strings.HasSuffix(durationStr, "d") {
+			value, err := strconv.Atoi(durationStr[:len(durationStr)-1])
+			if err != nil {
+				return nil, fmt.Errorf("invalid duration format: %s", durationStr)
+			}
+			return time.Duration(value) * 24 * time.Hour, nil
+		}
+
+		if strings.HasSuffix(durationStr, "w") {
+			value, err := strconv.Atoi(durationStr[:len(durationStr)-1])
+			if err != nil {
+				return nil, fmt.Errorf("invalid duration format: %s", durationStr)
+			}
+			return time.Duration(value) * 7 * 24 * time.Hour, nil
+		}
+
+		return nil, fmt.Errorf("invalid duration format: %s", durationStr)
+	}
 }
 
 // createDefaultConfig creates a default configuration
