@@ -4,60 +4,63 @@ This document outlines the specific tasks that need to be completed to address t
 
 ## Immediate Tasks (Next 1-2 weeks)
 
+### Core Features
+
+1. **Complete Plugin System Integration**
+   - ✅ Create plugin interface and plugin manager
+   - ✅ Add plugin loading and unloading capability
+   - ✅ Implement plugin UI with details view and metrics display
+   - Implement plugin directory scanning and automatic loading
+   - Add hot reload capability for plugins
+   - Create documentation for plugin development
+
+2. **Improve Notification Center**
+   - ✅ Create data model for notifications
+   - ✅ Implement notification storage in SQLite
+   - ✅ Implement notification UI with filtering capabilities
+   - Add notification badges on tabs when new notifications arrive
+   - Implement notification rules and severity-based styling
+   - Add notification sound alerts (configurable)
+
+3. **Cloud Provider Integration Plugins**
+   - Implement AWS plugin (EC2, S3, CloudWatch)
+   - Implement Azure plugin (VMs, Storage, Monitor)
+   - Implement GCP plugin (Compute, Storage, Monitoring)
+   - Create unified cloud resources view
+
 ### UI Component Completion
 
-1. **Fix Tab Navigation**
-   - Modify the `updateLayout()` function in `pkg/ui/app.go` to properly handle tab switching
-   - Fix rendering issues when changing between tabs
-   - Ensure proper tab height calculation
+4. **Fix Tab Navigation**
+   - ✅ Modify the `updateLayout()` function to properly handle tab switching
+   - ✅ Fix rendering issues when changing between tabs
+   - ✅ Ensure proper tab height calculation
 
-2. **Complete HTTP Endpoints Tab**
-   - Implement the `updateHTTPTabData()` function to display real data from HTTP collector
-   - Add status indicators with color coding (green for up, red for down)
-   - Fix table layout and ensure it scales properly with window resize
-   - Add response time history visualization
+5. **Complete HTTP Endpoints Tab**
+   - ✅ Implement the `updateHTTPTabData()` function to display real data
+   - ✅ Add status indicators with color coding (green for up, red for down)
+   - ✅ Fix table layout and ensure it scales properly with window resize
+   - ✅ Add response time history visualization
 
-3. **Complete Git Repository Tab** 
-   - Implement the `updateGitTabData()` function to display real data from Git collector
-   - Display repository information, branch details, and commit history
-   - Add color coding for modified files and pending commits
-   - Ensure table scales properly with window resize
+6. **Complete Git Repository Tab** 
+   - ✅ Implement the `updateGitTabData()` function to display real data
+   - ✅ Display repository information, branch details, and commit history
+   - ✅ Add color coding for modified files and pending commits
+   - ✅ Ensure table scales properly with window resize
 
-4. **Add Process Table to System Tab**
-   - Implement process data collection in system metrics collector
-   - Add sorting capability (by CPU, memory usage)
-   - Add process filtering functionality
-
-### Core Improvements
-
-5. **Add Help Screen**
-   - Create a help panel that shows keyboard shortcuts
-   - Implement toggle functionality (likely with '?' key)
-   - Document all available commands and navigation options
-
-6. **Implement Keyboard Shortcuts**
-   - Complete the `handleEvent()` function with all required shortcuts
-   - Add refresh data command (r key)
-   - Add filter functionality (f key)
-   - Add export functionality (Ctrl+e)
-
-7. **Fix Resize Handling**
-   - Improve window resize handling for all components
-   - Ensure UI components scale appropriately
-   - Fix potential rendering issues during resize
+7. **Help System**
+   - ✅ Create a help panel that shows keyboard shortcuts
+   - ✅ Implement toggle functionality (with '?' key)
+   - ✅ Document all available commands and navigation options
 
 ### Storage Implementation
 
-8. **Design SQLite Schema**
-   - Design database schema for metrics history
-   - Define retention policies
-   - Plan query patterns for visualization
-
-9. **Implement SQLite Integration**
-   - Create `internal/storage` package
-   - Implement database connection handling
-   - Add metrics storage functionality
-   - Implement query methods for historical data
+8. **SQLite Integration**
+   - ✅ Design database schema for metrics history
+   - ✅ Create `internal/storage` package
+   - ✅ Implement database connection handling
+   - ✅ Add metrics storage functionality
+   - ✅ Implement query methods for historical data
+   - ✅ Fix storage configuration to respect retention period
 
 ## Technical Debt to Address
 
@@ -65,125 +68,90 @@ This document outlines the specific tasks that need to be completed to address t
    - Update PRD to reflect the change from BubbleTea to TermUI
    - Document the current architecture in README
    - Add developer documentation for extending the dashboard
+   - Add plugin development guide
 
 2. **Tests**
    - Add unit tests for UI components
+   - Add unit tests for storage components
    - Improve test coverage for collectors
    - Add integration tests for the full application
+   - Add tests for plugin system
 
 3. **Code Refactoring**
    - Extract duplicate UI code into reusable functions
    - Improve error handling across the application
    - Standardize logging approach
 
-## Implementation Notes
+## Advanced Features to Implement
 
-### HTTP Tab Update Strategy
+1. **Dashboard Presets**
+   - Create predefined dashboard layouts for different use cases
+   - Implement layout saving and loading
+   - Add user preferences storage
 
-```go
-// In pkg/ui/app.go
-func (a *App) updateHTTPTabData() {
-    // Get the latest metrics from collector
-    metrics := a.httpCollector.GetLatestMetrics()
-    
-    // Get the HTTP table from the active tab
-    if len(a.tabs[1].tables) > 0 {
-        table := a.tabs[1].tables[0]
-        
-        // Reset the table to just the header row
-        table.Rows = [][]string{
-            {"Endpoint", "URL", "Status", "Response Time", "Last Checked"},
-        }
-        
-        // Add each endpoint to the table
-        for name, metric := range metrics {
-            status := "DOWN"
-            statusColor := ui.ColorRed
-            if metric.IsUp {
-                status = "UP"
-                statusColor = ui.ColorGreen
-            }
-            
-            // Format the response time
-            responseTime := fmt.Sprintf("%.0fms", float64(metric.ResponseTime.Milliseconds()))
-            
-            // Format the last checked time
-            lastChecked := metric.LastChecked.Format("15:04:05")
-            
-            // Add the row
-            table.Rows = append(table.Rows, []string{
-                name, metric.URL, status, responseTime, lastChecked,
-            })
-            
-            // Set color based on status
-            rowIdx := len(table.Rows) - 1
-            if metric.IsUp {
-                table.RowStyles[rowIdx] = ui.NewStyle(statusColor)
-            } else {
-                table.RowStyles[rowIdx] = ui.NewStyle(statusColor)
-            }
-        }
-    }
-}
-```
+2. **Kubernetes Integration**
+   - Create Kubernetes plugin for cluster monitoring
+   - Display pod status, resource usage
+   - Show deployment and service status
+   - Add container logs viewing capability
 
-### Git Tab Update Strategy
+3. **CI/CD Pipeline Integration**
+   - Create plugins for different CI/CD systems (Jenkins, GitHub Actions, GitLab CI)
+   - Display pipeline status and history
+   - Show build logs
+   - Add trigger capability for pipelines
 
-```go
-// In pkg/ui/app.go
-func (a *App) updateGitTabData() {
-    // Get the latest metrics from collector
-    metrics := a.gitCollector.GetLatestMetrics()
-    
-    // Update status table
-    if len(a.tabs[2].tables) > 0 {
-        statusTable := a.tabs[2].tables[0]
-        
-        // Update with real data
-        statusTable.Rows = [][]string{
-            {"Property", "Value"},
-            {"Repository", metrics.Name},
-            {"Branch", metrics.Branch},
-            {"Commit Count", strconv.Itoa(metrics.CommitCount)},
-            {"Last Commit", metrics.LastCommit.Format("2006-01-02 15:04:05")},
-            {"Modified Files", strconv.Itoa(metrics.ModifiedFiles)},
-            {"Pending Commits", strconv.Itoa(metrics.PendingCommits)},
-        }
-        
-        // Highlight modified files row if there are modifications
-        if metrics.ModifiedFiles > 0 {
-            statusTable.RowStyles[5] = ui.NewStyle(ui.ColorYellow)
-        } else {
-            statusTable.RowStyles[5] = ui.NewStyle(ui.ColorWhite)
-        }
-    }
-    
-    // Update commit history table
-    if len(a.tabs[2].tables) > 1 {
-        commitTable := a.tabs[2].tables[1]
-        
-        // Reset to header row
-        commitTable.Rows = [][]string{
-            {"Hash", "Author", "Date", "Message"},
-        }
-        
-        // Add commit history
-        for _, commit := range metrics.CommitHistory {
-            shortHash := commit.Hash
-            if len(shortHash) > 8 {
-                shortHash = shortHash[:8]
-            }
-            
-            commitTable.Rows = append(commitTable.Rows, []string{
-                shortHash,
-                commit.Author,
-                commit.Timestamp.Format("2006-01-02"),
-                commit.Message,
-            })
-        }
-    }
-}
-```
+4. **Advanced Visualization**
+   - Add more chart types (bar charts, pie charts)
+   - Implement heatmaps for correlating metrics
+   - Add custom dashboard widgets
+
+## Implementation Strategy for Plugins
+
+1. **Plugin Directory Structure**
+   ```
+   plugins/
+     aws/
+       aws.so    # Compiled plugin
+       README.md # Documentation
+     azure/
+       azure.so
+       README.md
+     kubernetes/
+       kubernetes.so
+       README.md
+   ```
+
+2. **Plugin Loading Process**
+   - Scan plugins directory on startup
+   - Load enabled plugins from configuration
+   - Initialize plugins with their configuration
+   - Register plugin metrics and notifications
+
+3. **Plugin Development Guide**
+   ```go
+   // Example plugin implementation
+   package main
+
+   import (
+       "github.com/Teomazivila/maz-term/pkg/models"
+       "github.com/Teomazivila/maz-term/pkg/plugins"
+   )
+
+   type MyPlugin struct {
+       // plugin implementation
+   }
+
+   // NewPlugin is the exported plugin constructor
+   func NewPlugin() plugins.Plugin {
+       return &MyPlugin{
+           // initialize plugin
+       }
+   }
+
+   // Implement all required interface methods
+   // ...
+   ```
 
 ## Testing Strategy
 
@@ -192,14 +160,18 @@ func (a *App) updateGitTabData() {
    - Test tab navigation with keyboard shortcuts
    - Test window resizing behavior
    - Test all data collectors update in real-time
+   - Test plugin loading and unloading
+   - Test notification creation and management
 
 2. **Automated Tests**
    - Create mock collectors for testing UI components
+   - Create mock plugins for testing plugin manager
    - Add benchmarks for performance-critical sections
    - Add integration tests for the full application
 
 ## Resources Required
 
-- SQLite driver for Go (github.com/mattn/go-sqlite3)
-- Additional documentation on TermUI for advanced layouts
-- Access to test systems with different terminal sizes and capabilities 
+- Go plugin system documentation (for plugin development)
+- Cloud provider SDK documentation (AWS, Azure, GCP)
+- Kubernetes Go client documentation
+- CI/CD system API documentation 

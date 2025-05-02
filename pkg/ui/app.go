@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Teomazivila/maz-term/pkg/collector"
 	"github.com/Teomazivila/maz-term/pkg/config"
 	"github.com/Teomazivila/maz-term/pkg/models"
+	"github.com/Teomazivila/maz-term/pkg/plugins"
 	ui "github.com/gizak/termui/v3"
 	"github.com/gizak/termui/v3/widgets"
 )
@@ -36,41 +38,54 @@ type StorageInterface interface {
 	GetEventAnnotations(period time.Duration) ([]models.EventAnnotation, error)
 	AddEventAnnotation(event models.EventAnnotation) error
 	DeleteEventAnnotation(id string) error
+
+	// Notifications
+	AddNotification(notification models.Notification) error
+	GetNotifications(count int, includeRead bool) ([]models.Notification, error)
+	MarkAsRead(id string) error
+	DismissNotification(id string) error
+	ClearAllNotifications() error
+	GetUnreadNotificationCount() (int, error)
 }
 
 // App represents the main terminal UI application using termui
 type App struct {
-	config            *config.Config
-	activeTabIndex    int
-	tabs              []*Tab
-	statusBar         *widgets.Paragraph
-	grid              *ui.Grid
-	tabBar            *widgets.TabPane
-	running           bool
-	systemCollector   *collector.SystemMetricsCollector
-	httpCollector     *collector.HTTPHealthChecker
-	gitCollector      *collector.GitStatusCollector
-	termWidth         int
-	termHeight        int
-	showHelp          bool
-	helpPanel         *widgets.Paragraph
-	storage           StorageInterface
-	exportInProgress  bool
-	historyRange      time.Duration            // Selected time range for history tab
-	historyRangeIdx   int                      // Index of currently selected range option
-	showAnnotations   bool                     // Whether to show event annotations
-	annotations       []models.EventAnnotation // Cached event annotations
-	addingAnnotation  bool                     // Whether we're currently adding a new annotation
-	annotationForm    *widgets.Paragraph       // Form for adding new annotations
-	zoomMode          bool                     // Whether we're in zoom mode
-	zoomActiveChart   int                      // Index of chart being zoomed
-	zoomStartPercent  float64                  // Start position of zoom region (percentage)
-	zoomEndPercent    float64                  // End position of zoom region (percentage)
-	zoomStartTime     time.Time                // Start time for zoomed view
-	zoomEndTime       time.Time                // End time for zoomed view
-	comparisonMode    bool                     // Whether comparison mode is active
-	primaryMetric     string                   // Primary metric being compared
-	comparisonMetrics []string                 // List of metrics being compared
+	config                 *config.Config
+	activeTabIndex         int
+	tabs                   []*Tab
+	statusBar              *widgets.Paragraph
+	grid                   *ui.Grid
+	tabBar                 *widgets.TabPane
+	running                bool
+	systemCollector        *collector.SystemMetricsCollector
+	httpCollector          *collector.HTTPHealthChecker
+	gitCollector           *collector.GitStatusCollector
+	termWidth              int
+	termHeight             int
+	showHelp               bool
+	helpPanel              *widgets.Paragraph
+	storage                StorageInterface
+	exportInProgress       bool
+	historyRange           time.Duration            // Selected time range for history tab
+	historyRangeIdx        int                      // Index of currently selected range option
+	showAnnotations        bool                     // Whether to show event annotations
+	annotations            []models.EventAnnotation // Cached event annotations
+	addingAnnotation       bool                     // Whether we're currently adding a new annotation
+	annotationForm         *widgets.Paragraph       // Form for adding new annotations
+	zoomMode               bool                     // Whether we're in zoom mode
+	zoomActiveChart        int                      // Index of chart being zoomed
+	zoomStartPercent       float64                  // Start position of zoom region (percentage)
+	zoomEndPercent         float64                  // End position of zoom region (percentage)
+	zoomStartTime          time.Time                // Start time for zoomed view
+	zoomEndTime            time.Time                // End time for zoomed view
+	comparisonMode         bool                     // Whether comparison mode is active
+	primaryMetric          string                   // Primary metric being compared
+	comparisonMetrics      []string                 // List of metrics being compared
+	notifications          []models.Notification    // Cached notifications
+	selectedNotification   int                      // Index of the selected notification
+	notificationDetailMode bool                     // Whether notification detail mode is active
+	pluginManager          *plugins.PluginManager   // Plugin manager
+	pluginMetrics          []models.Metric          // Metrics from plugins
 }
 
 // Tab represents a tab in the terminal UI
@@ -91,9 +106,10 @@ func NewApp(cfg *config.Config) *App {
 		config:          cfg,
 		activeTabIndex:  0,
 		tabs:            []*Tab{},
-		historyRange:    24 * time.Hour, // Default to 24 hours
-		historyRangeIdx: 3,              // Default index for 24 hours
-		showAnnotations: true,           // Show annotations by default
+		historyRange:    24 * time.Hour,             // Default to 24 hours
+		historyRangeIdx: 3,                          // Default index for 24 hours
+		showAnnotations: true,                       // Show annotations by default
+		pluginManager:   plugins.NewPluginManager(), // Initialize plugin manager
 	}
 
 	// Create tabs from configuration
@@ -116,6 +132,40 @@ func NewApp(cfg *config.Config) *App {
 		app.tabs = append(app.tabs, NewTab(config.LayoutTab{
 			Name:   "History",
 			Panels: []string{"history"},
+		}))
+	}
+
+	// Add Notifications tab if not already included
+	hasNotificationsTab := false
+	for _, tab := range app.tabs {
+		if tab.name == "Notifications" {
+			hasNotificationsTab = true
+			break
+		}
+	}
+
+	if !hasNotificationsTab {
+		// Add notifications tab
+		app.tabs = append(app.tabs, NewTab(config.LayoutTab{
+			Name:   "Notifications",
+			Panels: []string{"notifications"},
+		}))
+	}
+
+	// Add Plugins tab if not already included
+	hasPluginsTab := false
+	for _, tab := range app.tabs {
+		if tab.name == "Plugins" {
+			hasPluginsTab = true
+			break
+		}
+	}
+
+	if !hasPluginsTab {
+		// Add plugins tab
+		app.tabs = append(app.tabs, NewTab(config.LayoutTab{
+			Name:   "Plugins",
+			Panels: []string{"plugins"},
 		}))
 	}
 
@@ -146,8 +196,19 @@ func (a *App) Run() error {
 	// Initialize collectors
 	a.initCollectors()
 
-	// Create UI elements
+	// Create UI elements before trying to access them
 	a.createUI()
+
+	// Now that UI elements are initialized, we can access a.statusBar
+	// Load plugins from plugins directory if it exists
+	pluginsDir := filepath.Join(".", "plugins")
+	if _, err := os.Stat(pluginsDir); !os.IsNotExist(err) {
+		// Directory exists, load plugins
+		a.statusBar.Text = "Loading plugins..."
+		ui.Render(a.statusBar)
+		// Code to walk directory and load plugins would go here
+		// This is a placeholder for the actual implementation
+	}
 
 	// Set up event handling
 	uiEvents := ui.PollEvents()
@@ -168,6 +229,9 @@ func (a *App) Run() error {
 			a.updateLayout()
 		}
 	}
+
+	// Clean up plugins
+	a.pluginManager.ShutdownAll()
 
 	return nil
 }
@@ -299,6 +363,10 @@ func (a *App) createTabContent(tab *Tab, tabIndex int) {
 		a.createGitTabContent(tab)
 	case "History":
 		a.createHistoryTabContent(tab)
+	case "Notifications":
+		a.createNotificationsTabContent(tab)
+	case "Plugins":
+		a.createPluginsTabContent(tab)
 	}
 }
 
@@ -546,6 +614,200 @@ func (a *App) createHistoryTabContent(tab *Tab) {
 	tab.widgets = append(tab.widgets, annotationForm)
 }
 
+// createNotificationsTabContent creates content for the Notifications tab
+func (a *App) createNotificationsTabContent(tab *Tab) {
+	// Create notifications list with enhanced styling
+	notificationList := widgets.NewList()
+	notificationList.Title = "Notifications"
+	notificationList.Rows = []string{"Loading notifications..."}
+	notificationList.SelectedRowStyle = ui.NewStyle(ui.ColorBlack, ui.ColorCyan)
+	notificationList.WrapText = true
+	notificationList.BorderStyle.Fg = ui.ColorCyan
+	notificationList.TitleStyle.Fg = ui.ColorCyan
+	notificationList.TitleStyle.Modifier = ui.ModifierBold
+	tab.widgets = append(tab.widgets, notificationList)
+
+	// Create notification detail panel with enhanced styling
+	notificationDetail := widgets.NewParagraph()
+	notificationDetail.Title = "Details"
+	notificationDetail.Text = "Select a notification to view details."
+	notificationDetail.BorderStyle.Fg = ui.ColorCyan
+	notificationDetail.TitleStyle.Fg = ui.ColorCyan
+	notificationDetail.TitleStyle.Modifier = ui.ModifierBold
+	tab.panels = append(tab.panels, notificationDetail)
+	tab.widgets = append(tab.widgets, notificationDetail)
+
+	// Create notification actions panel with enhanced styling
+	notificationActions := widgets.NewParagraph()
+	notificationActions.Title = "Actions"
+	notificationActions.BorderStyle.Fg = ui.ColorCyan
+	notificationActions.TitleStyle.Fg = ui.ColorCyan
+	notificationActions.TitleStyle.Modifier = ui.ModifierBold
+	notificationActions.Text = `
+[r] Mark as Read   [d] Dismiss   [c] Clear All   [↑/↓] Navigate   [Enter] Toggle Details
+
+Notifications will appear here when system events occur or alerts are triggered.
+Unread notifications will be highlighted.
+`
+	tab.panels = append(tab.panels, notificationActions)
+	tab.widgets = append(tab.widgets, notificationActions)
+}
+
+// createPluginsTabContent creates content for the Plugins tab
+func (a *App) createPluginsTabContent(tab *Tab) {
+	// Create plugins list with enhanced styling
+	pluginsList := widgets.NewList()
+	pluginsList.Title = "Loaded Plugins"
+	pluginsList.Rows = []string{"No plugins loaded"}
+	pluginsList.SelectedRowStyle = ui.NewStyle(ui.ColorBlack, ui.ColorCyan)
+	pluginsList.WrapText = true
+	pluginsList.BorderStyle.Fg = ui.ColorCyan
+	pluginsList.TitleStyle.Fg = ui.ColorCyan
+	pluginsList.TitleStyle.Modifier = ui.ModifierBold
+	tab.widgets = append(tab.widgets, pluginsList)
+
+	// Create plugin details panel
+	pluginDetails := widgets.NewParagraph()
+	pluginDetails.Title = "Plugin Details"
+	pluginDetails.Text = "Select a plugin to view details"
+	pluginDetails.BorderStyle.Fg = ui.ColorCyan
+	pluginDetails.TitleStyle.Fg = ui.ColorCyan
+	pluginDetails.TitleStyle.Modifier = ui.ModifierBold
+	tab.panels = append(tab.panels, pluginDetails)
+	tab.widgets = append(tab.widgets, pluginDetails)
+
+	// Create plugin metrics panel
+	metricsTable := widgets.NewTable()
+	metricsTable.Title = "Plugin Metrics"
+	metricsTable.Rows = [][]string{
+		{"Metric", "Value", "Unit", "Source"},
+		{"No metrics available", "", "", ""},
+	}
+	metricsTable.TextStyle = ui.NewStyle(ui.ColorWhite)
+	metricsTable.RowSeparator = true
+	metricsTable.BorderStyle.Fg = ui.ColorCyan
+	metricsTable.TitleStyle.Fg = ui.ColorCyan
+	metricsTable.TitleStyle.Modifier = ui.ModifierBold
+	metricsTable.RowStyles[0] = ui.NewStyle(ui.ColorWhite, ui.ColorBlack, ui.ModifierBold)
+	tab.tables = append(tab.tables, metricsTable)
+	tab.widgets = append(tab.widgets, metricsTable)
+
+	// Create actions panel
+	actionsPanel := widgets.NewParagraph()
+	actionsPanel.Title = "Actions"
+	actionsPanel.Text = `
+[L] Load Plugin   [r] Reload Plugin   [u] Unload Plugin   [c] Collect Data
+
+Use the arrow keys to navigate the plugin list.
+`
+	actionsPanel.BorderStyle.Fg = ui.ColorCyan
+	actionsPanel.TitleStyle.Fg = ui.ColorCyan
+	actionsPanel.TitleStyle.Modifier = ui.ModifierBold
+	tab.panels = append(tab.panels, actionsPanel)
+	tab.widgets = append(tab.widgets, actionsPanel)
+}
+
+// configurePluginsTabGrid configures the grid for the Plugins tab
+func (a *App) configurePluginsTabGrid(tab *Tab, x1, y1, x2, y2 int) {
+	// Create a grid
+	tab.grid = ui.NewGrid()
+	tab.grid.SetRect(x1, y1, x2, y2)
+
+	// Configure rows and columns
+	tab.grid.Set(
+		ui.NewRow(0.6,
+			ui.NewCol(0.3, tab.widgets[0]), // Plugin list
+			ui.NewCol(0.7,
+				ui.NewRow(0.5, tab.widgets[1]), // Plugin details
+				ui.NewRow(0.5, tab.widgets[2]), // Plugin metrics
+			),
+		),
+		ui.NewRow(0.4,
+			ui.NewCol(1.0, tab.widgets[3]), // Actions
+		),
+	)
+}
+
+// updatePluginsTabData updates the data for the Plugins tab
+func (a *App) updatePluginsTabData() {
+	// Skip if not on plugins tab
+	if a.tabs[a.activeTabIndex].name != "Plugins" {
+		return
+	}
+
+	// Get loaded plugins
+	plugins := a.pluginManager.GetPlugins()
+
+	// Update plugin list
+	pluginsList := a.tabs[a.activeTabIndex].widgets[0].(*widgets.List)
+
+	if len(plugins) == 0 {
+		// No plugins loaded
+		pluginsList.Rows = []string{"No plugins loaded"}
+		return
+	}
+
+	// Update plugin rows
+	rows := make([]string, len(plugins))
+	for i, p := range plugins {
+		rows[i] = fmt.Sprintf("%s (v%s)", p.Name(), p.Version())
+	}
+	pluginsList.Rows = rows
+
+	// Update plugin details if one is selected
+	if pluginsList.SelectedRow < len(plugins) {
+		selectedPlugin := plugins[pluginsList.SelectedRow]
+
+		// Update details panel
+		detailsPanel := a.tabs[a.activeTabIndex].widgets[1].(*widgets.Paragraph)
+		detailsPanel.Text = fmt.Sprintf(`
+Name: %s
+Version: %s
+Description: %s
+
+Configuration Schema:
+`, selectedPlugin.Name(), selectedPlugin.Version(), selectedPlugin.Description())
+
+		// Add configuration schema
+		schema := selectedPlugin.GetConfigSchema()
+		if len(schema) > 0 {
+			for key, desc := range schema {
+				detailsPanel.Text += fmt.Sprintf("- %s: %s\n", key, desc)
+			}
+		} else {
+			detailsPanel.Text += "No configuration options available."
+		}
+
+		// Update metrics table
+		metricsTable := a.tabs[a.activeTabIndex].widgets[2].(*widgets.Table)
+		metrics := selectedPlugin.GetMetrics()
+
+		if len(metrics) == 0 {
+			metricsTable.Rows = [][]string{
+				{"Metric", "Value", "Unit", "Source"},
+				{"No metrics available", "", "", ""},
+			}
+		} else {
+			// Build table rows
+			rows := [][]string{
+				{"Metric", "Value", "Unit", "Source", "Timestamp"},
+			}
+
+			for _, m := range metrics {
+				rows = append(rows, []string{
+					m.Name,
+					fmt.Sprintf("%.2f", m.Value),
+					m.Unit,
+					m.Source,
+					m.Timestamp.Format("15:04:05"),
+				})
+			}
+
+			metricsTable.Rows = rows
+		}
+	}
+}
+
 // updateLayout updates the UI layout based on terminal dimensions
 func (a *App) updateLayout() {
 	// Get terminal dimensions
@@ -591,6 +853,10 @@ func (a *App) updateLayout() {
 		a.configureGitTabGrid(activeTab, 0, tabBarHeight, width, tabBarHeight+contentHeight)
 	case "History":
 		a.configureHistoryTabGrid(activeTab, 0, tabBarHeight, width, tabBarHeight+contentHeight)
+	case "Notifications":
+		a.configureNotificationsTabGrid(activeTab, 0, tabBarHeight, width, tabBarHeight+contentHeight)
+	case "Plugins":
+		a.configurePluginsTabGrid(activeTab, 0, tabBarHeight, width, tabBarHeight+contentHeight)
 	}
 
 	// Directly render each component to ensure they appear
@@ -719,113 +985,152 @@ func (a *App) configureHistoryTabGrid(tab *Tab, x1, y1, x2, y2 int) {
 	tab.grid = grid
 }
 
+// configureNotificationsTabGrid configures the grid for the Notifications tab
+func (a *App) configureNotificationsTabGrid(tab *Tab, x1, y1, x2, y2 int) {
+	// Create a grid
+	tab.grid = ui.NewGrid()
+	tab.grid.SetRect(x1, y1, x2, y2)
+
+	// Configure rows and columns
+	tab.grid.Set(
+		ui.NewRow(0.7,
+			ui.NewCol(0.6, tab.widgets[0]), // Notification list
+			ui.NewCol(0.4, tab.widgets[1]), // Notification detail
+		),
+		ui.NewRow(0.3,
+			ui.NewCol(1.0, tab.widgets[2]), // Actions
+		),
+	)
+}
+
 // handleEvent handles UI events
 func (a *App) handleEvent(e ui.Event) {
-	// If in zoom mode, handle zoom-specific controls
+	// Handle global events regardless of tab
+	switch e.ID {
+	case "q", "<C-c>":
+		a.running = false
+	case "?":
+		// Toggle help panel
+		a.showHelp = !a.showHelp
+		a.updateLayout()
+	case "<Escape>":
+		// Close any active panels or forms
+		if a.showHelp {
+			a.showHelp = false
+			a.updateLayout()
+		} else if a.addingAnnotation {
+			a.addingAnnotation = false
+			a.updateLayout()
+		} else if a.zoomMode {
+			a.resetZoom()
+			a.updateLayout()
+		} else if a.comparisonMode {
+			a.exitComparisonMode()
+			a.updateLayout()
+		}
+	case "e":
+		// Export data to CSV
+		go a.exportData()
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+		// Switch tab by number (1-based)
+		tabNum, _ := strconv.Atoi(e.ID)
+		if tabNum <= len(a.tabs) {
+			a.activeTabIndex = tabNum - 1
+			a.tabBar.ActiveTabIndex = a.activeTabIndex
+			a.updateLayout()
+		}
+	}
+
+	// If help is shown, don't process other keys
+	if a.showHelp {
+		return
+	}
+
+	// Handle zoom mode
 	if a.zoomMode {
 		a.handleZoomModeEvent(e)
 		return
 	}
 
-	// If in comparison mode, handle comparison-specific controls
+	// Handle comparison mode
 	if a.comparisonMode {
 		a.handleComparisonModeEvent(e)
 		return
 	}
 
-	switch e.ID {
-	case "q", "<C-c>":
-		a.running = false
-	case "<Resize>":
-		payload := e.Payload.(ui.Resize)
-		a.termWidth = payload.Width
-		a.termHeight = payload.Height
-		a.updateLayout()
-	case "<Left>", "h":
-		if !a.showHelp {
-			a.tabBar.FocusLeft()
-			a.updateLayout()
-		}
-	case "<Right>", "l":
-		if !a.showHelp {
-			a.tabBar.FocusRight()
-			a.updateLayout()
-		}
-	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
-		if !a.showHelp {
-			idx := int(e.ID[0] - '1')
-			if idx < len(a.tabs) {
-				a.tabBar.ActiveTabIndex = idx
-				a.updateLayout()
-			}
-		}
-	case "?":
-		a.showHelp = !a.showHelp
-		a.updateLayout()
-	case "<Escape>":
-		if a.showHelp {
-			a.showHelp = false
-			a.updateLayout()
-		} else if a.addingAnnotation {
-			// Cancel adding annotation
-			a.addingAnnotation = false
-			a.updateLayout()
-		}
-	case "r":
-		if !a.showHelp {
-			// Check if we're in a zoomed view
-			if a.tabBar.ActiveTabIndex == 3 && a.zoomEndTime.After(a.zoomStartTime) {
-				// Reset zoom to default time range
-				a.resetZoom()
-			}
+	// If on the Notifications tab, handle notification-specific events
+	if a.activeTabIndex < len(a.tabs) && a.tabs[a.activeTabIndex].name == "Notifications" {
+		a.handleNotificationEvents(e)
+		return
+	}
 
-			// Force data refresh
-			a.updateData()
-			a.updateLayout()
+	// If on the Plugins tab, handle plugin-specific events
+	if a.activeTabIndex < len(a.tabs) && a.tabs[a.activeTabIndex].name == "Plugins" {
+		a.handlePluginEvents(e)
+		return
+	}
+
+	// Handle tab-specific events
+	switch e.ID {
+	case "<Left>", "h":
+		// Switch to previous tab
+		a.activeTabIndex--
+		if a.activeTabIndex < 0 {
+			a.activeTabIndex = len(a.tabs) - 1
 		}
-	case "e":
-		if !a.showHelp && !a.exportInProgress && a.storage != nil {
-			// Export data
-			go a.exportData()
+		a.tabBar.ActiveTabIndex = a.activeTabIndex
+		a.updateLayout()
+	case "<Right>", "l":
+		// Switch to next tab
+		a.activeTabIndex++
+		if a.activeTabIndex >= len(a.tabs) {
+			a.activeTabIndex = 0
 		}
-	case "[", "<":
-		// Decrease time range in history tab
-		if !a.showHelp && a.tabBar.ActiveTabIndex == 3 {
-			a.decreaseTimeRange()
-			a.updateData()
-			a.updateLayout()
-		}
-	case "]", ">":
-		// Increase time range in history tab
-		if !a.showHelp && a.tabBar.ActiveTabIndex == 3 {
-			a.increaseTimeRange()
-			a.updateData()
-			a.updateLayout()
-		}
-	case "a":
-		// Toggle annotations in history tab
-		if !a.showHelp && a.tabBar.ActiveTabIndex == 3 {
-			a.showAnnotations = !a.showAnnotations
-			a.updateData()
-			a.updateLayout()
-		}
-	case "n":
-		// Add new annotation in history tab
-		if !a.showHelp && a.tabBar.ActiveTabIndex == 3 && !a.addingAnnotation {
-			a.addingAnnotation = true
-			a.showAddAnnotationForm()
-			a.updateLayout()
-		}
+		a.tabBar.ActiveTabIndex = a.activeTabIndex
+		a.updateLayout()
 	case "z":
-		// Enter zoom mode for historical charts
-		if !a.showHelp && a.tabBar.ActiveTabIndex == 3 && !a.addingAnnotation {
+		// Enter zoom mode
+		if a.tabs[a.activeTabIndex].name == "History" {
 			a.enterZoomMode()
 			a.updateLayout()
 		}
 	case "c":
-		// Enter comparison mode in history tab
-		if !a.showHelp && a.tabBar.ActiveTabIndex == 3 && !a.addingAnnotation && !a.zoomMode {
+		// Enter comparison mode
+		if a.tabs[a.activeTabIndex].name == "History" {
 			a.enterComparisonMode()
+			a.updateLayout()
+		}
+	case "[":
+		// Decrease time range
+		if a.tabs[a.activeTabIndex].name == "History" {
+			a.decreaseTimeRange()
+			a.updateHistoryTabData()
+			a.updateLayout()
+		}
+	case "]":
+		// Increase time range
+		if a.tabs[a.activeTabIndex].name == "History" {
+			a.increaseTimeRange()
+			a.updateHistoryTabData()
+			a.updateLayout()
+		}
+	case "a":
+		// Toggle annotations
+		if a.tabs[a.activeTabIndex].name == "History" {
+			a.showAnnotations = !a.showAnnotations
+			a.updateHistoryTabData()
+			a.updateLayout()
+		}
+	case "n":
+		// Add new annotation
+		if a.tabs[a.activeTabIndex].name == "History" {
+			a.showAddAnnotationForm()
+			a.updateLayout()
+		}
+	case "r":
+		// Refresh data manually
+		if a.tabs[a.activeTabIndex].name != "Notifications" {
+			a.updateData()
 			a.updateLayout()
 		}
 	}
@@ -992,6 +1297,10 @@ func (a *App) updateData() {
 		a.updateGitTabData()
 	case 3:
 		a.updateHistoryTabData()
+	case 4:
+		a.updateNotificationsTabData()
+	case 5:
+		a.updatePluginsTabData()
 	}
 }
 
@@ -1606,6 +1915,114 @@ func (a *App) updateHistoryTabData() {
 	}
 }
 
+// updateNotificationsTabData updates the data for the Notifications tab
+func (a *App) updateNotificationsTabData() {
+	// Skip if not on notifications tab
+	if a.tabs[a.activeTabIndex].name != "Notifications" {
+		return
+	}
+
+	// Get notifications if storage is available
+	if a.storage != nil {
+		// Fetch notifications (show 50 max, including read ones)
+		notifications, err := a.storage.GetNotifications(50, true)
+		if err != nil {
+			// Show error in list
+			list := a.tabs[a.activeTabIndex].widgets[0].(*widgets.List)
+			list.Rows = []string{"Error loading notifications: " + err.Error()}
+			list.SelectedRow = 0
+			return
+		}
+
+		// Update cached notifications
+		a.notifications = notifications
+
+		// Update list
+		list := a.tabs[a.activeTabIndex].widgets[0].(*widgets.List)
+
+		if len(notifications) == 0 {
+			// No notifications
+			list.Rows = []string{"No notifications."}
+			list.SelectedRow = 0
+
+			// Update detail panel
+			detailPanel := a.tabs[a.activeTabIndex].widgets[1].(*widgets.Paragraph)
+			detailPanel.Text = "No notifications to display."
+			return
+		}
+
+		// Build notification rows
+		rows := make([]string, len(notifications))
+		for i, n := range notifications {
+			// Format timestamp
+			timestamp := n.Timestamp.Format("2006-01-02 15:04:05")
+
+			// Format severity with color code
+			severity := string(n.Severity)
+
+			// Format prefix based on read status
+			prefix := " "
+			if !n.Read {
+				prefix = "*"
+			}
+
+			// Format title with truncation if needed
+			title := n.Title
+			if len(title) > 40 {
+				title = title[:37] + "..."
+			}
+
+			// Build the row
+			rows[i] = fmt.Sprintf("%s %s [%s] %s", prefix, timestamp, severity, title)
+		}
+
+		list.Rows = rows
+
+		// Update selection if needed
+		if a.selectedNotification >= len(notifications) {
+			a.selectedNotification = 0
+		}
+		list.SelectedRow = a.selectedNotification
+
+		// Update detail panel if in detail mode
+		if a.notificationDetailMode && len(notifications) > 0 {
+			n := notifications[a.selectedNotification]
+			detailPanel := a.tabs[a.activeTabIndex].widgets[1].(*widgets.Paragraph)
+
+			detailText := fmt.Sprintf(`
+Title: %s
+Timestamp: %s
+Severity: %s
+Source: %s
+
+%s
+
+`, n.Title, n.Timestamp.Format("2006-01-02 15:04:05"),
+				n.Severity, n.Source, n.Message)
+
+			// Add action if available
+			if n.ActionLabel != "" && n.ActionURL != "" {
+				detailText += fmt.Sprintf("\nAction: %s (%s)", n.ActionLabel, n.ActionURL)
+			}
+
+			// Add tags if available
+			if len(n.Tags) > 0 {
+				detailText += fmt.Sprintf("\nTags: %s", strings.Join(n.Tags, ", "))
+			}
+
+			detailPanel.Text = detailText
+		}
+	} else {
+		// No storage available
+		list := a.tabs[a.activeTabIndex].widgets[0].(*widgets.List)
+		list.Rows = []string{"Storage not available."}
+		list.SelectedRow = 0
+
+		detailPanel := a.tabs[a.activeTabIndex].widgets[1].(*widgets.Paragraph)
+		detailPanel.Text = "Storage not available."
+	}
+}
+
 // StartApp starts the terminal UI application
 func StartApp(cfg *config.Config, storageProvider collector.StorageProvider) error {
 	app := NewApp(cfg)
@@ -2089,4 +2506,189 @@ func (a *App) getMetricColors(primary string, comparisons []string) []ui.Color {
 	}
 
 	return colors
+}
+
+// handleNotificationEvents handles events specific to the Notifications tab
+func (a *App) handleNotificationEvents(e ui.Event) {
+	// Handle keys
+	switch e.ID {
+	case "q", "<C-c>":
+		a.running = false
+	case "<Left>", "h":
+		// Switch to previous tab
+		a.activeTabIndex--
+		if a.activeTabIndex < 0 {
+			a.activeTabIndex = len(a.tabs) - 1
+		}
+		a.tabBar.ActiveTabIndex = a.activeTabIndex
+		a.updateLayout()
+		return
+	case "<Right>", "l":
+		// Switch to next tab
+		a.activeTabIndex++
+		if a.activeTabIndex >= len(a.tabs) {
+			a.activeTabIndex = 0
+		}
+		a.tabBar.ActiveTabIndex = a.activeTabIndex
+		a.updateLayout()
+		return
+	case "<Up>", "k":
+		if a.selectedNotification > 0 {
+			a.selectedNotification--
+			list := a.tabs[a.activeTabIndex].widgets[0].(*widgets.List)
+			list.SelectedRow = a.selectedNotification
+			a.updateNotificationsTabData()
+		}
+	case "<Down>", "j":
+		if a.selectedNotification < len(a.notifications)-1 {
+			a.selectedNotification++
+			list := a.tabs[a.activeTabIndex].widgets[0].(*widgets.List)
+			list.SelectedRow = a.selectedNotification
+			a.updateNotificationsTabData()
+		}
+	case "<Enter>":
+		// Toggle detail mode
+		a.notificationDetailMode = !a.notificationDetailMode
+		a.updateNotificationsTabData()
+	case "r":
+		// Mark as read
+		if len(a.notifications) > 0 && a.storage != nil {
+			notificationID := a.notifications[a.selectedNotification].ID
+			if err := a.storage.MarkAsRead(notificationID); err != nil {
+				// Show error in status bar
+				a.statusBar.Text = fmt.Sprintf("Error marking notification as read: %v", err)
+			} else {
+				// Success
+				a.statusBar.Text = "Notification marked as read."
+				a.notifications[a.selectedNotification].Read = true
+				a.updateNotificationsTabData()
+			}
+		}
+	case "d":
+		// Dismiss notification
+		if len(a.notifications) > 0 && a.storage != nil {
+			notificationID := a.notifications[a.selectedNotification].ID
+			if err := a.storage.DismissNotification(notificationID); err != nil {
+				// Show error in status bar
+				a.statusBar.Text = fmt.Sprintf("Error dismissing notification: %v", err)
+			} else {
+				// Success
+				a.statusBar.Text = "Notification dismissed."
+				// Remove from list and update
+				a.notifications = append(a.notifications[:a.selectedNotification], a.notifications[a.selectedNotification+1:]...)
+				if a.selectedNotification >= len(a.notifications) && a.selectedNotification > 0 {
+					a.selectedNotification--
+				}
+				a.updateNotificationsTabData()
+			}
+		}
+	case "c":
+		// Clear all
+		if a.storage != nil {
+			if err := a.storage.ClearAllNotifications(); err != nil {
+				// Show error in status bar
+				a.statusBar.Text = fmt.Sprintf("Error clearing notifications: %v", err)
+			} else {
+				// Success
+				a.statusBar.Text = "All notifications cleared."
+				a.notifications = []models.Notification{}
+				a.selectedNotification = 0
+				a.updateNotificationsTabData()
+			}
+		}
+	}
+}
+
+// handlePluginEvents handles events specific to the Plugins tab
+func (a *App) handlePluginEvents(e ui.Event) {
+	// Handle keys
+	switch e.ID {
+	case "q", "<C-c>":
+		a.running = false
+	case "<Left>", "h":
+		// Switch to previous tab
+		a.activeTabIndex--
+		if a.activeTabIndex < 0 {
+			a.activeTabIndex = len(a.tabs) - 1
+		}
+		a.tabBar.ActiveTabIndex = a.activeTabIndex
+		a.updateLayout()
+		return
+	case "<Right>", "l":
+		// Switch to next tab
+		a.activeTabIndex++
+		if a.activeTabIndex >= len(a.tabs) {
+			a.activeTabIndex = 0
+		}
+		a.tabBar.ActiveTabIndex = a.activeTabIndex
+		a.updateLayout()
+		return
+	case "<Up>", "k":
+		// Move selection up
+		list := a.tabs[a.activeTabIndex].widgets[0].(*widgets.List)
+		if list.SelectedRow > 0 {
+			list.SelectedRow--
+			a.updatePluginsTabData()
+		}
+	case "<Down>", "j":
+		// Move selection down
+		list := a.tabs[a.activeTabIndex].widgets[0].(*widgets.List)
+		plugins := a.pluginManager.GetPlugins()
+		if list.SelectedRow < len(plugins)-1 {
+			list.SelectedRow++
+			a.updatePluginsTabData()
+		}
+	case "L":
+		// Load a plugin (uppercase L to avoid conflict with navigation)
+		a.loadPlugin()
+	case "u":
+		// Unload a plugin
+		list := a.tabs[a.activeTabIndex].widgets[0].(*widgets.List)
+		plugins := a.pluginManager.GetPlugins()
+		if len(plugins) > 0 && list.SelectedRow < len(plugins) {
+			plugin := plugins[list.SelectedRow]
+			if err := a.pluginManager.UnloadPlugin(plugin.Name()); err != nil {
+				a.statusBar.Text = fmt.Sprintf("Error unloading plugin: %v", err)
+			} else {
+				a.statusBar.Text = fmt.Sprintf("Plugin '%s' unloaded successfully", plugin.Name())
+				list.SelectedRow = 0
+				a.updatePluginsTabData()
+			}
+		}
+	case "c":
+		// Collect data from plugins
+		plugins := a.pluginManager.GetPlugins()
+		if len(plugins) > 0 {
+			list := a.tabs[a.activeTabIndex].widgets[0].(*widgets.List)
+			if list.SelectedRow < len(plugins) {
+				plugin := plugins[list.SelectedRow]
+				if _, err := plugin.Collect(); err != nil {
+					a.statusBar.Text = fmt.Sprintf("Error collecting data: %v", err)
+				} else {
+					a.statusBar.Text = fmt.Sprintf("Data collected successfully from plugin '%s'", plugin.Name())
+					a.updatePluginsTabData()
+
+					// Check for notifications from plugin
+					notifications := plugin.GetNotifications()
+					if len(notifications) > 0 {
+						// Add notifications to storage if available
+						if a.storage != nil {
+							for _, notification := range notifications {
+								if err := a.storage.AddNotification(notification); err != nil {
+									a.statusBar.Text = fmt.Sprintf("Error adding notification: %v", err)
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// loadPlugin shows a dialog to load a plugin from a file
+func (a *App) loadPlugin() {
+	// In a real implementation, this would show a file picker dialog
+	// For now, we'll just set a message in the status bar
+	a.statusBar.Text = "Plugin loading not implemented yet. See the development roadmap."
 }

@@ -101,3 +101,30 @@ type ServiceStatus struct {
 	IsHealthy bool          `json:"is_healthy"`
 	LastCheck time.Time     `json:"last_check"`
 }
+
+// Metric represents a generic metric from any data source
+type Metric struct {
+	// Name is the unique name of the metric
+	Name string `json:"name"`
+
+	// Value is the current value of the metric
+	Value float64 `json:"value"`
+
+	// Unit is the unit of measurement for the metric
+	Unit string `json:"unit"`
+
+	// Timestamp is when the metric was collected
+	Timestamp time.Time `json:"timestamp"`
+
+	// Source is where the metric came from (e.g., system, plugin name)
+	Source string `json:"source"`
+
+	// Tags are additional metadata for the metric
+	Tags map[string]string `json:"tags,omitempty"`
+
+	// ThresholdWarning is the warning threshold for this metric, if applicable
+	ThresholdWarning *float64 `json:"threshold_warning,omitempty"`
+
+	// ThresholdCritical is the critical threshold for this metric, if applicable
+	ThresholdCritical *float64 `json:"threshold_critical,omitempty"`
+}

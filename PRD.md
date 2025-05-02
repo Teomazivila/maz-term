@@ -44,7 +44,7 @@ A terminal-based dashboard that aggregates key DevOps metrics, alerts, and tasks
 
 ### 3.1 Architecture
 - Core engine written in Go for performance
-- Terminal UI using BubbleTea/Lipgloss libraries
+- Terminal UI using TermUI libraries
 - Plugin system for extensibility
 - Local SQLite database for caching and historical data
 - RESTful API clients for service integrations
@@ -138,7 +138,7 @@ A terminal-based dashboard that aggregates key DevOps metrics, alerts, and tasks
 ## 8. Technical Requirements
 
 ### 8.1 Development Environment
-- Go 1.21+
+- Go 1.24+
 - Dependencies managed via Go modules
 - Build system: Make or similar
 - Testing: Go testing framework with testify

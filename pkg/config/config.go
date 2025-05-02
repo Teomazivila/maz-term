@@ -32,6 +32,7 @@ type Config struct {
 	Metrics   MetricsConfig           `mapstructure:"metrics"`
 	Endpoints []models.EndpointConfig `mapstructure:"endpoints"`
 	Git       GitConfig               `mapstructure:"git"`
+	Plugins   PluginsConfig           `mapstructure:"plugins"`
 }
 
 // GeneralConfig contains general application settings
@@ -84,6 +85,13 @@ type GitRepositoryConfig struct {
 	Path   string `mapstructure:"path"`
 	Remote string `mapstructure:"remote"`
 	Branch string `mapstructure:"branch"`
+}
+
+// PluginsConfig contains configuration for plugins
+type PluginsConfig struct {
+	Directory string                 `mapstructure:"directory"`
+	Enabled   []string               `mapstructure:"enabled"`
+	Settings  map[string]interface{} `mapstructure:"settings"`
 }
 
 // LoadConfig loads the application configuration from the specified file
@@ -249,6 +257,11 @@ func SaveConfig(config *Config, filePath string) error {
 // DefaultConfig returns the default configuration
 func DefaultConfig() *Config {
 	return &Config{
+		General: GeneralConfig{
+			RefreshInterval:  5 * time.Second,
+			Theme:            "default",
+			HistoryRetention: 7 * 24 * time.Hour, // 7 days
+		},
 		Layout: []LayoutTab{
 			{
 				Name:   "System",
@@ -266,7 +279,8 @@ func DefaultConfig() *Config {
 		Endpoints: []models.EndpointConfig{
 			{Name: "Google", URL: "https://www.google.com", Method: "GET"},
 			{Name: "GitHub", URL: "https://github.com", Method: "GET"},
-			{Name: "Example", URL: "https://example.com", Method: "GET"},
+			{Name: "Celesta", URL: "https://celesta.io", Method: "GET"},
+			{Name: "Teomaz", URL: "https://teomazivila.com", Method: "GET"},
 		},
 		Git: GitConfig{
 			Repositories: []GitRepoConfig{
@@ -276,6 +290,11 @@ func DefaultConfig() *Config {
 					Branch: "main",
 				},
 			},
+		},
+		Plugins: PluginsConfig{
+			Directory: "plugins",
+			Enabled:   []string{},
+			Settings:  map[string]interface{}{},
 		},
 	}
 }

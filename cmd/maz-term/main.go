@@ -38,12 +38,16 @@ func main() {
 	// Initialize storage if enabled
 	var storageAdapter *storage.Adapter
 	if !*noStorageFlag {
-		// Initialize SQLite database
-		db, err := storage.New(nil) // Use default configuration
+		// Initialize SQLite database with configuration
+		dbConfig := &storage.Config{
+			RetentionPeriod: cfg.General.HistoryRetention,
+		}
+		db, err := storage.New(dbConfig)
 		if err != nil {
 			fmt.Printf("Error initializing database: %v, metrics will not be stored\n", err)
 		} else {
 			fmt.Println("Database initialized successfully")
+			fmt.Printf("Using retention period of %s\n", cfg.General.HistoryRetention)
 
 			// Seed the database with demo data if it's empty
 			if err := db.SeedDemoDataIfEmpty(); err != nil {

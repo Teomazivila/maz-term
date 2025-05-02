@@ -17,6 +17,32 @@ layout:
         panels: ["service-status"]
       - size: 2
         panels: ["http-endpoints"]
+  
+  - name: "Git"
+    rows:
+      - size: 1
+        panels: ["git-status"]
+      - size: 2
+        panels: ["git-commits"]
+
+  - name: "History"
+    rows:
+      - size: 1
+        panels: ["cpu-history", "memory-history"]
+      - size: 2
+        panels: ["disk-history", "http-history"]
+
+  - name: "Notifications"
+    rows:
+      - size: 1
+        panels: ["notifications"]
+
+  - name: "Plugins"
+    rows:
+      - size: 1
+        panels: ["plugins-list"]
+      - size: 2
+        panels: ["plugin-details"]
 
 metrics:
   local:
@@ -35,4 +61,13 @@ metrics:
     repositories:
       - path: "~/projects/main-service"
         remote: "origin"
-        branch: "main" 
+        branch: "main"
+
+plugins:
+  directory: "plugins"
+  enabled:
+    - "sample"
+  settings:
+    sample:
+      interval: "30s"
+      threshold: 80 

@@ -167,6 +167,11 @@ func (d *Database) initSchema() error {
 		return fmt.Errorf("failed to create git_metrics index: %w", err)
 	}
 
+	// Initialize notifications schema
+	if err := d.InitNotificationsSchema(); err != nil {
+		return fmt.Errorf("failed to initialize notifications schema: %w", err)
+	}
+
 	return nil
 }
 

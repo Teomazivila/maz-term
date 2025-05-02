@@ -305,3 +305,33 @@ func sanitizeFileName(name string) string {
 	}
 	return result
 }
+
+// AddNotification adds a new notification
+func (a *Adapter) AddNotification(notification models.Notification) error {
+	return a.db.AddNotification(notification)
+}
+
+// GetNotifications retrieves notifications from the database
+func (a *Adapter) GetNotifications(count int, includeRead bool) ([]models.Notification, error) {
+	return a.db.GetNotifications(count, includeRead)
+}
+
+// MarkAsRead marks a notification as read
+func (a *Adapter) MarkAsRead(id string) error {
+	return a.db.MarkAsRead(id)
+}
+
+// DismissNotification marks a notification as dismissed
+func (a *Adapter) DismissNotification(id string) error {
+	return a.db.DismissNotification(id)
+}
+
+// ClearAllNotifications marks all notifications as dismissed
+func (a *Adapter) ClearAllNotifications() error {
+	return a.db.ClearAllNotifications()
+}
+
+// GetUnreadNotificationCount returns the count of unread notifications
+func (a *Adapter) GetUnreadNotificationCount() (int, error) {
+	return a.db.GetUnreadNotificationCount()
+}
