@@ -121,6 +121,33 @@ func TestGitStatusCollector(t *testing.T) {
 	// Just check that we got a valid metrics object with the name field populated
 	assert.NotEmpty(t, gitMetrics.Name)
 
+	// If this is a git repository, verify commit history structure
+	if gitMetrics.Branch != "" {
+		// May have commits or not, but the CommitHistory field should be initialized
+		assert.NotNil(t, gitMetrics.CommitHistory)
+
+		// If we have commits, verify their structure
+		for _, commit := range gitMetrics.CommitHistory {
+			if commit.Hash != "" {
+				// Commit hash should be a 40-character hex string if present
+				assert.Len(t, commit.Hash, 40)
+
+				// Author should be non-empty
+				assert.NotEmpty(t, commit.Author)
+
+				// Message should be non-empty
+				assert.NotEmpty(t, commit.Message)
+
+				// If timestamp is set, it shouldn't be zero
+				if !commit.Timestamp.IsZero() {
+					// Timestamp should be in the past
+					assert.True(t, commit.Timestamp.Before(time.Now()) ||
+						commit.Timestamp.Equal(time.Now()))
+				}
+			}
+		}
+	}
+
 	// Test the start and stop methods
 	err = c.Start(ctx, 1*time.Second)
 	assert.NoError(t, err)

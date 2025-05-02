@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -151,33 +152,68 @@ func (c *GitStatusCollector) collectRepoData(ctx context.Context, metrics *model
 		metrics.CommitCount = count
 	}
 
-	// Get last commit time
-	lastCommitTime, err := c.runGitCommand(ctx, "log", "-1", "--format=%ct")
-	if err == nil {
-		timestamp := int64(0)
-		fmt.Sscanf(strings.TrimSpace(lastCommitTime), "%d", &timestamp)
-		if timestamp > 0 {
+	// Get last commit date
+	lastCommitDate, err := c.runGitCommand(ctx, "log", "-1", "--format=%at")
+	if err == nil && lastCommitDate != "" {
+		timestamp, err := strconv.ParseInt(strings.TrimSpace(lastCommitDate), 10, 64)
+		if err == nil {
 			metrics.LastCommit = time.Unix(timestamp, 0)
 		}
 	}
 
-	// Get uncommitted changes
+	// Get status (modified files)
 	status, err := c.runGitCommand(ctx, "status", "--porcelain")
 	if err == nil {
-		lines := strings.Split(strings.TrimSpace(status), "\n")
-		metrics.ModifiedFiles = 0
-		if len(lines) > 0 && lines[0] != "" {
-			metrics.ModifiedFiles = len(lines)
+		lines := strings.Split(status, "\n")
+		count := 0
+		for _, line := range lines {
+			if len(strings.TrimSpace(line)) > 0 {
+				count++
+			}
 		}
+		metrics.ModifiedFiles = count
 	}
 
-	// Get unpushed commits
-	unpushedCommits, err := c.runGitCommand(ctx, "log", "@{u}..", "--oneline")
+	// Get pending commits (commits not pushed to remote)
+	pendingCommits, err := c.runGitCommand(ctx, "log", "@{u}..", "--oneline")
 	if err == nil {
-		lines := strings.Split(strings.TrimSpace(unpushedCommits), "\n")
-		metrics.PendingCommits = 0
-		if len(lines) > 0 && lines[0] != "" {
-			metrics.PendingCommits = len(lines)
+		lines := strings.Split(pendingCommits, "\n")
+		count := 0
+		for _, line := range lines {
+			if len(strings.TrimSpace(line)) > 0 {
+				count++
+			}
+		}
+		metrics.PendingCommits = count
+	}
+
+	// Get commit history (last 10 commits)
+	commitHistory, err := c.runGitCommand(ctx, "log", "-10", "--pretty=format:%H|%an|%at|%s")
+	if err == nil && commitHistory != "" {
+		lines := strings.Split(commitHistory, "\n")
+		metrics.CommitHistory = make([]models.CommitInfo, 0, len(lines))
+
+		for _, line := range lines {
+			if len(strings.TrimSpace(line)) == 0 {
+				continue
+			}
+
+			parts := strings.SplitN(line, "|", 4)
+			if len(parts) >= 4 {
+				timestamp, err := strconv.ParseInt(strings.TrimSpace(parts[2]), 10, 64)
+				commitTime := time.Time{}
+				if err == nil {
+					commitTime = time.Unix(timestamp, 0)
+				}
+
+				commit := models.CommitInfo{
+					Hash:      strings.TrimSpace(parts[0]),
+					Author:    strings.TrimSpace(parts[1]),
+					Timestamp: commitTime,
+					Message:   strings.TrimSpace(parts[3]),
+				}
+				metrics.CommitHistory = append(metrics.CommitHistory, commit)
+			}
 		}
 	}
 

@@ -76,12 +76,21 @@ type EndpointMetrics struct {
 
 // GitRepoMetrics represents Git repository metrics
 type GitRepoMetrics struct {
-	Name           string    `json:"name"`
-	Branch         string    `json:"branch"`
-	CommitCount    int       `json:"commit_count"`
-	LastCommit     time.Time `json:"last_commit"`
-	PendingCommits int       `json:"pending_commits"`
-	ModifiedFiles  int       `json:"modified_files"`
+	Name           string       `json:"name"`
+	Branch         string       `json:"branch"`
+	CommitCount    int          `json:"commit_count"`
+	LastCommit     time.Time    `json:"last_commit"`
+	PendingCommits int          `json:"pending_commits"`
+	ModifiedFiles  int          `json:"modified_files"`
+	CommitHistory  []CommitInfo `json:"commit_history"`
+}
+
+// CommitInfo represents a single git commit
+type CommitInfo struct {
+	Hash      string    `json:"hash"`
+	Author    string    `json:"author"`
+	Message   string    `json:"message"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 // ServiceStatus represents the status of a service

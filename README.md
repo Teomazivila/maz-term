@@ -18,6 +18,10 @@ A powerful, customizable terminal-based dashboard for DevOps professionals. Moni
   - Kubernetes clusters
   - CI/CD pipelines (GitHub Actions, Jenkins, GitLab CI)
   - Git repositories
+    - Branch and status information
+    - Modified files tracking
+    - Pending commit detection
+    - Detailed commit history view
   - HTTP endpoints and APIs
 - **Customizable Layout**: Configure your perfect dashboard with drag-and-drop panels
 - **Low Resource Footprint**: Minimal CPU and memory usage
@@ -198,6 +202,8 @@ Contributions are welcome! Please check our [Contributing Guidelines](CONTRIBUTI
 - [x] System metrics
 - [x] HTTP endpoint monitoring
 - [x] Git integration
+  - [x] Repository status
+  - [x] Commit history
 - [ ] Cloud provider integration
 - [ ] Kubernetes monitoring
 - [ ] CI/CD pipeline integration

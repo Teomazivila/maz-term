@@ -313,15 +313,18 @@ func (a *App) createGitTabContent(tab *Tab) {
 	tab.tables = append(tab.tables, gitTable)
 	tab.widgets = append(tab.widgets, gitTable)
 
-	// Create commit history plot
-	commitPlot := widgets.NewPlot()
-	commitPlot.Title = "Commit History"
-	commitPlot.Data = make([][]float64, 1)
-	commitPlot.Data[0] = []float64{5, 8, 12, 4, 7}
-	commitPlot.AxesColor = ui.ColorWhite
-	commitPlot.LineColors = []ui.Color{ui.ColorRed}
-	commitPlot.DrawDirection = widgets.DrawLeft
-	tab.widgets = append(tab.widgets, commitPlot)
+	// Create commit history table
+	commitTable := widgets.NewTable()
+	commitTable.Title = "Recent Commits"
+	commitTable.Rows = [][]string{
+		{"Hash", "Author", "Date", "Message"},
+	}
+	commitTable.TextStyle = ui.NewStyle(ui.ColorWhite)
+	commitTable.RowSeparator = true
+	commitTable.BorderStyle = ui.NewStyle(ui.ColorBlue)
+	commitTable.RowStyles[0] = ui.NewStyle(ui.ColorWhite, ui.ColorBlack, ui.ModifierBold)
+	tab.tables = append(tab.tables, commitTable)
+	tab.widgets = append(tab.widgets, commitTable)
 }
 
 // updateLayout updates the UI layout based on terminal dimensions
@@ -441,10 +444,10 @@ func (a *App) configureGitTabGrid(tab *Tab, x1, y1, x2, y2 int) {
 	grid := ui.NewGrid()
 	grid.SetRect(x1, y1, x2, y2)
 
-	// Configure grid with table and plot
+	// Configure grid with status table and commit history table
 	grid.Set(
-		ui.NewRow(0.6, ui.NewCol(1.0, tab.widgets[0])), // Git status table
-		ui.NewRow(0.4, ui.NewCol(1.0, tab.widgets[1])), // Commit history plot
+		ui.NewRow(0.4, ui.NewCol(1.0, tab.widgets[0])), // Git status table
+		ui.NewRow(0.6, ui.NewCol(1.0, tab.widgets[1])), // Commit history table
 	)
 
 	tab.grid = grid
@@ -634,6 +637,53 @@ func (a *App) updateGitTabData() {
 			if len(table.RowStyles) >= 7 {
 				table.RowStyles[5] = modifiedColor
 				table.RowStyles[6] = pendingColor
+			}
+		}
+	}
+
+	// Update commit history table
+	if len(tab.tables) > 1 {
+		commitTable := tab.tables[1]
+
+		// Keep only header row
+		header := commitTable.Rows[0]
+		commitTable.Rows = [][]string{header}
+
+		// Save header style
+		headerStyle := commitTable.RowStyles[0]
+		commitTable.RowStyles = make(map[int]ui.Style)
+		commitTable.RowStyles[0] = headerStyle
+
+		// Add commit history rows
+		for i, commit := range metrics.CommitHistory {
+			shortHash := commit.Hash
+			if len(shortHash) > 8 {
+				shortHash = shortHash[:8]
+			}
+
+			commitTime := "N/A"
+			if !commit.Timestamp.IsZero() {
+				commitTime = commit.Timestamp.Format("2006-01-02 15:04")
+			}
+
+			// Truncate message if too long
+			message := commit.Message
+			if len(message) > 50 {
+				message = message[:47] + "..."
+			}
+
+			commitTable.Rows = append(commitTable.Rows, []string{
+				shortHash,
+				commit.Author,
+				commitTime,
+				message,
+			})
+
+			// Alternate row colors for better readability
+			if i%2 == 0 {
+				commitTable.RowStyles[i+1] = ui.NewStyle(ui.ColorWhite)
+			} else {
+				commitTable.RowStyles[i+1] = ui.NewStyle(ui.ColorCyan)
 			}
 		}
 	}
