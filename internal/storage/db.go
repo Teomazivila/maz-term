@@ -440,3 +440,42 @@ func (db *Database) DeleteEventAnnotation(id string) error {
 	// For now, just return success
 	return nil
 }
+
+// StoreCloudMetrics stores cloud provider metrics in the database
+func (db *Database) StoreCloudMetrics(metrics models.CloudProviderMetrics) error {
+	// For the MVP, we'll just log that we received metrics
+	// In a full implementation, this would store data in the database
+
+	fmt.Printf("Storing cloud metrics for %s with %d instances\n",
+		metrics.ProviderType,
+		len(metrics.InstanceMetrics))
+
+	// For now, return success
+	return nil
+}
+
+// StoreKubernetesMetrics stores Kubernetes metrics in the database
+func (db *Database) StoreKubernetesMetrics(metrics models.KubernetesMetrics) error {
+	// For the MVP, we'll just log that we received metrics
+	// In a full implementation, this would store data in the database
+
+	fmt.Printf("Storing Kubernetes metrics for cluster %s with %d pods\n",
+		metrics.ClusterName,
+		len(metrics.Pods))
+
+	// For now, return success
+	return nil
+}
+
+// StoreCICDMetrics stores CI/CD metrics in the database
+func (db *Database) StoreCICDMetrics(metrics models.CICDMetrics) error {
+	// For the MVP, we'll just log that we received metrics
+	// In a full implementation, this would store data in the database
+
+	fmt.Printf("Storing CI/CD metrics for %s provider with %d workflows\n",
+		metrics.ProviderType,
+		len(metrics.Workflows))
+
+	// For now, return success
+	return nil
+}

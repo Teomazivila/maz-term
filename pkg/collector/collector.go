@@ -11,6 +11,9 @@ type StorageProvider interface {
 	StoreSystemMetrics(metrics interface{}) error
 	StoreHTTPMetrics(name string, metrics interface{}) error
 	StoreGitMetrics(metrics interface{}) error
+	StoreCloudMetrics(metrics interface{}) error
+	StoreKubernetesMetrics(metrics interface{}) error
+	StoreCICDMetrics(metrics interface{}) error
 }
 
 // Collector is the interface that wraps the basic Collect method

@@ -60,6 +60,9 @@ type App struct {
 	systemCollector        *collector.SystemMetricsCollector
 	httpCollector          *collector.HTTPHealthChecker
 	gitCollector           *collector.GitStatusCollector
+	cloudCollector         interface{ GetLatestMetrics() interface{} }
+	kubernetesCollector    interface{ GetLatestMetrics() interface{} }
+	cicdCollector          interface{ GetLatestMetrics() interface{} }
 	termWidth              int
 	termHeight             int
 	showHelp               bool
@@ -367,6 +370,12 @@ func (a *App) createTabContent(tab *Tab, tabIndex int) {
 		a.createNotificationsTabContent(tab)
 	case "Plugins":
 		a.createPluginsTabContent(tab)
+	case "Cloud":
+		a.createCloudTabContent(tab)
+	case "Kubernetes":
+		a.createKubernetesTabContent(tab)
+	case "CI/CD":
+		a.createCICDTabContent(tab)
 	}
 }
 
@@ -707,6 +716,137 @@ Use the arrow keys to navigate the plugin list.
 	tab.widgets = append(tab.widgets, actionsPanel)
 }
 
+// createCloudTabContent creates content for the Cloud tab
+func (a *App) createCloudTabContent(tab *Tab) {
+	// Create instances table with enhanced styling
+	instancesTable := widgets.NewTable()
+	instancesTable.Title = "Cloud Instances"
+	instancesTable.Rows = [][]string{
+		{"ID", "Name", "Type", "Region", "Status", "CPU%", "MEM%", "Uptime"},
+		// Empty rows to be filled with data
+	}
+	instancesTable.TextStyle = ui.NewStyle(ui.ColorWhite)
+	instancesTable.RowSeparator = true
+	instancesTable.BorderStyle.Fg = ui.ColorCyan
+	instancesTable.TitleStyle.Fg = ui.ColorCyan
+	instancesTable.TitleStyle.Modifier = ui.ModifierBold
+	instancesTable.RowStyles[0] = ui.NewStyle(ui.ColorWhite, ui.ColorBlack, ui.ModifierBold)
+	tab.tables = append(tab.tables, instancesTable)
+	tab.widgets = append(tab.widgets, instancesTable)
+
+	// Create storage table with enhanced styling
+	storageTable := widgets.NewTable()
+	storageTable.Title = "Cloud Storage"
+	storageTable.Rows = [][]string{
+		{"ID", "Name", "Type", "Region", "Size", "Objects", "Requests"},
+		// Empty rows to be filled with data
+	}
+	storageTable.TextStyle = ui.NewStyle(ui.ColorWhite)
+	storageTable.RowSeparator = true
+	storageTable.BorderStyle.Fg = ui.ColorCyan
+	storageTable.TitleStyle.Fg = ui.ColorCyan
+	storageTable.TitleStyle.Modifier = ui.ModifierBold
+	storageTable.RowStyles[0] = ui.NewStyle(ui.ColorWhite, ui.ColorBlack, ui.ModifierBold)
+	tab.tables = append(tab.tables, storageTable)
+	tab.widgets = append(tab.widgets, storageTable)
+
+	// Create database table with enhanced styling
+	databaseTable := widgets.NewTable()
+	databaseTable.Title = "Cloud Databases"
+	databaseTable.Rows = [][]string{
+		{"ID", "Name", "Type", "Engine", "Region", "Status", "CPU%", "Storage%"},
+		// Empty rows to be filled with data
+	}
+	databaseTable.TextStyle = ui.NewStyle(ui.ColorWhite)
+	databaseTable.RowSeparator = true
+	databaseTable.BorderStyle.Fg = ui.ColorCyan
+	databaseTable.TitleStyle.Fg = ui.ColorCyan
+	databaseTable.TitleStyle.Modifier = ui.ModifierBold
+	databaseTable.RowStyles[0] = ui.NewStyle(ui.ColorWhite, ui.ColorBlack, ui.ModifierBold)
+	tab.tables = append(tab.tables, databaseTable)
+	tab.widgets = append(tab.widgets, databaseTable)
+}
+
+// createKubernetesTabContent creates content for the Kubernetes tab
+func (a *App) createKubernetesTabContent(tab *Tab) {
+	// Create overview panel with enhanced styling
+	overviewPanel := widgets.NewParagraph()
+	overviewPanel.Title = "Kubernetes Cluster Overview"
+	overviewPanel.Text = "Loading cluster information..."
+	overviewPanel.BorderStyle.Fg = ui.ColorCyan
+	overviewPanel.TitleStyle.Fg = ui.ColorCyan
+	overviewPanel.TitleStyle.Modifier = ui.ModifierBold
+	tab.panels = append(tab.panels, overviewPanel)
+	tab.widgets = append(tab.widgets, overviewPanel)
+
+	// Create pods table with enhanced styling
+	podsTable := widgets.NewTable()
+	podsTable.Title = "Kubernetes Pods"
+	podsTable.Rows = [][]string{
+		{"Name", "Namespace", "Status", "Node", "Restarts", "Age", "CPU", "MEM"},
+		// Empty rows to be filled with data
+	}
+	podsTable.TextStyle = ui.NewStyle(ui.ColorWhite)
+	podsTable.RowSeparator = true
+	podsTable.BorderStyle.Fg = ui.ColorCyan
+	podsTable.TitleStyle.Fg = ui.ColorCyan
+	podsTable.TitleStyle.Modifier = ui.ModifierBold
+	podsTable.RowStyles[0] = ui.NewStyle(ui.ColorWhite, ui.ColorBlack, ui.ModifierBold)
+	tab.tables = append(tab.tables, podsTable)
+	tab.widgets = append(tab.widgets, podsTable)
+
+	// Create deployments table with enhanced styling
+	deploymentsTable := widgets.NewTable()
+	deploymentsTable.Title = "Kubernetes Deployments"
+	deploymentsTable.Rows = [][]string{
+		{"Name", "Namespace", "Replicas", "Available", "Up-to-date", "Age"},
+		// Empty rows to be filled with data
+	}
+	deploymentsTable.TextStyle = ui.NewStyle(ui.ColorWhite)
+	deploymentsTable.RowSeparator = true
+	deploymentsTable.BorderStyle.Fg = ui.ColorCyan
+	deploymentsTable.TitleStyle.Fg = ui.ColorCyan
+	deploymentsTable.TitleStyle.Modifier = ui.ModifierBold
+	deploymentsTable.RowStyles[0] = ui.NewStyle(ui.ColorWhite, ui.ColorBlack, ui.ModifierBold)
+	tab.tables = append(tab.tables, deploymentsTable)
+	tab.widgets = append(tab.widgets, deploymentsTable)
+}
+
+// createCICDTabContent creates content for the CI/CD tab
+func (a *App) createCICDTabContent(tab *Tab) {
+	// Create workflows table with enhanced styling
+	workflowsTable := widgets.NewTable()
+	workflowsTable.Title = "CI/CD Workflows"
+	workflowsTable.Rows = [][]string{
+		{"Name", "Repository", "Status", "Success Rate", "Last Run", "Duration"},
+		// Empty rows to be filled with data
+	}
+	workflowsTable.TextStyle = ui.NewStyle(ui.ColorWhite)
+	workflowsTable.RowSeparator = true
+	workflowsTable.BorderStyle.Fg = ui.ColorCyan
+	workflowsTable.TitleStyle.Fg = ui.ColorCyan
+	workflowsTable.TitleStyle.Modifier = ui.ModifierBold
+	workflowsTable.RowStyles[0] = ui.NewStyle(ui.ColorWhite, ui.ColorBlack, ui.ModifierBold)
+	tab.tables = append(tab.tables, workflowsTable)
+	tab.widgets = append(tab.widgets, workflowsTable)
+
+	// Create runs table with enhanced styling
+	runsTable := widgets.NewTable()
+	runsTable.Title = "Recent CI/CD Runs"
+	runsTable.Rows = [][]string{
+		{"ID", "Workflow", "Status", "Started", "Duration", "Trigger", "Branch", "Commit"},
+		// Empty rows to be filled with data
+	}
+	runsTable.TextStyle = ui.NewStyle(ui.ColorWhite)
+	runsTable.RowSeparator = true
+	runsTable.BorderStyle.Fg = ui.ColorCyan
+	runsTable.TitleStyle.Fg = ui.ColorCyan
+	runsTable.TitleStyle.Modifier = ui.ModifierBold
+	runsTable.RowStyles[0] = ui.NewStyle(ui.ColorWhite, ui.ColorBlack, ui.ModifierBold)
+	tab.tables = append(tab.tables, runsTable)
+	tab.widgets = append(tab.widgets, runsTable)
+}
+
 // configurePluginsTabGrid configures the grid for the Plugins tab
 func (a *App) configurePluginsTabGrid(tab *Tab, x1, y1, x2, y2 int) {
 	// Create a grid
@@ -808,6 +948,65 @@ Configuration Schema:
 	}
 }
 
+// configureCloudTabGrid configures the grid for the Cloud tab
+func (a *App) configureCloudTabGrid(tab *Tab, x1, y1, x2, y2 int) {
+	if len(tab.widgets) < 3 {
+		return
+	}
+
+	// Create a grid for the Cloud tab
+	grid := ui.NewGrid()
+	grid.SetRect(x1, y1, x2, y2)
+
+	// Configure grid with row layout
+	grid.Set(
+		ui.NewRow(0.33, ui.NewCol(1.0, tab.widgets[0])), // Instances table
+		ui.NewRow(0.33, ui.NewCol(1.0, tab.widgets[1])), // Storage table
+		ui.NewRow(0.34, ui.NewCol(1.0, tab.widgets[2])), // Database table
+	)
+
+	tab.grid = grid
+}
+
+// configureKubernetesTabGrid configures the grid for the Kubernetes tab
+func (a *App) configureKubernetesTabGrid(tab *Tab, x1, y1, x2, y2 int) {
+	if len(tab.widgets) < 3 {
+		return
+	}
+
+	// Create a grid for the Kubernetes tab
+	grid := ui.NewGrid()
+	grid.SetRect(x1, y1, x2, y2)
+
+	// Configure grid with row layout
+	grid.Set(
+		ui.NewRow(0.3, ui.NewCol(1.0, tab.widgets[0])), // Overview panel
+		ui.NewRow(0.4, ui.NewCol(1.0, tab.widgets[1])), // Pods table
+		ui.NewRow(0.3, ui.NewCol(1.0, tab.widgets[2])), // Deployments table
+	)
+
+	tab.grid = grid
+}
+
+// configureCICDTabGrid configures the grid for the CI/CD tab
+func (a *App) configureCICDTabGrid(tab *Tab, x1, y1, x2, y2 int) {
+	if len(tab.widgets) < 2 {
+		return
+	}
+
+	// Create a grid for the CI/CD tab
+	grid := ui.NewGrid()
+	grid.SetRect(x1, y1, x2, y2)
+
+	// Configure grid with row layout
+	grid.Set(
+		ui.NewRow(0.5, ui.NewCol(1.0, tab.widgets[0])), // Workflows table
+		ui.NewRow(0.5, ui.NewCol(1.0, tab.widgets[1])), // Runs table
+	)
+
+	tab.grid = grid
+}
+
 // updateLayout updates the UI layout based on terminal dimensions
 func (a *App) updateLayout() {
 	// Get terminal dimensions
@@ -857,6 +1056,12 @@ func (a *App) updateLayout() {
 		a.configureNotificationsTabGrid(activeTab, 0, tabBarHeight, width, tabBarHeight+contentHeight)
 	case "Plugins":
 		a.configurePluginsTabGrid(activeTab, 0, tabBarHeight, width, tabBarHeight+contentHeight)
+	case "Cloud":
+		a.configureCloudTabGrid(activeTab, 0, tabBarHeight, width, tabBarHeight+contentHeight)
+	case "Kubernetes":
+		a.configureKubernetesTabGrid(activeTab, 0, tabBarHeight, width, tabBarHeight+contentHeight)
+	case "CI/CD":
+		a.configureCICDTabGrid(activeTab, 0, tabBarHeight, width, tabBarHeight+contentHeight)
 	}
 
 	// Directly render each component to ensure they appear
@@ -1281,27 +1486,38 @@ func (a *App) applyZoom() {
 
 // updateData updates the data displayed in the UI
 func (a *App) updateData() {
-	// Don't update data while help is displayed
-	if a.showHelp {
-		return
+	// Update the tab data based on active tab
+	if a.tabBar.ActiveTabIndex < len(a.tabs) {
+		activeTabName := a.tabs[a.tabBar.ActiveTabIndex].name
+		switch activeTabName {
+		case "System", "System Overview":
+			a.updateSystemTabData()
+		case "HTTP", "Services":
+			a.updateHTTPTabData()
+		case "Git":
+			a.updateGitTabData()
+		case "History":
+			a.updateHistoryTabData()
+		case "Notifications":
+			a.updateNotificationsTabData()
+		case "Plugins":
+			a.updatePluginsTabData()
+		case "Cloud":
+			a.updateCloudTabData()
+		case "Kubernetes":
+			a.updateKubernetesTabData()
+		case "CI/CD":
+			a.updateCICDTabData()
+		}
 	}
 
-	// Update tab-specific data based on active tab
-	activeTabIdx := a.tabBar.ActiveTabIndex
-	switch activeTabIdx {
-	case 0:
-		a.updateSystemTabData()
-	case 1:
-		a.updateHTTPTabData()
-	case 2:
-		a.updateGitTabData()
-	case 3:
-		a.updateHistoryTabData()
-	case 4:
-		a.updateNotificationsTabData()
-	case 5:
-		a.updatePluginsTabData()
-	}
+	// Update status bar with the time
+	now := time.Now()
+	a.statusBar.Text = fmt.Sprintf("Status: Ready | Time: %s | Press [?] for Help | Tab %d/%d: %s",
+		now.Format("15:04:05"),
+		a.tabBar.ActiveTabIndex+1,
+		len(a.tabs),
+		a.tabs[a.tabBar.ActiveTabIndex].name)
 }
 
 // updateSystemTabData updates the system tab data
@@ -2023,6 +2239,258 @@ Source: %s
 	}
 }
 
+// updateCloudTabData updates data for the Cloud tab
+func (a *App) updateCloudTabData() {
+	if a.cloudCollector == nil {
+		return
+	}
+
+	// Get tab and tables
+	tab := a.getTabByName("Cloud")
+	if tab == nil || len(tab.tables) < 3 {
+		return
+	}
+
+	instancesTable := tab.tables[0]
+	storageTable := tab.tables[1]
+	databaseTable := tab.tables[2]
+
+	// Get latest metrics
+	rawMetrics := a.cloudCollector.GetLatestMetrics()
+
+	// Type assertion
+	var metrics models.CloudProviderMetrics
+	if cloudMetrics, ok := rawMetrics.(models.CloudProviderMetrics); ok {
+		metrics = cloudMetrics
+	} else {
+		// Unable to cast, return
+		return
+	}
+
+	// Update instances table
+	instanceRows := [][]string{
+		{"ID", "Name", "Type", "Region", "Status", "CPU%", "MEM%", "Uptime"},
+	}
+
+	for _, instance := range metrics.InstanceMetrics {
+		instanceRows = append(instanceRows, []string{
+			truncateString(instance.ID, 12),
+			truncateString(instance.Name, 20),
+			instance.Type,
+			instance.Region,
+			string(instance.Status),
+			fmt.Sprintf("%.1f", instance.CPUUtilization),
+			fmt.Sprintf("%.1f", instance.MemoryUtilization),
+			fmt.Sprintf("%.1f", instance.UptimeHours),
+		})
+	}
+	instancesTable.Rows = instanceRows
+
+	// Update storage table
+	storageRows := [][]string{
+		{"ID", "Name", "Type", "Region", "Size", "Objects", "Requests"},
+	}
+
+	for _, storage := range metrics.StorageMetrics {
+		storageRows = append(storageRows, []string{
+			truncateString(storage.ID, 12),
+			truncateString(storage.Name, 20),
+			storage.Type,
+			storage.Region,
+			formatBytes(uint64(storage.TotalSizeBytes)),
+			fmt.Sprintf("%d", storage.ObjectCount),
+			fmt.Sprintf("%d", storage.RequestCount),
+		})
+	}
+	storageTable.Rows = storageRows
+
+	// Update database table
+	dbRows := [][]string{
+		{"ID", "Name", "Type", "Engine", "Region", "Status", "CPU%", "Storage%"},
+	}
+
+	for _, db := range metrics.DatabaseMetrics {
+		dbRows = append(dbRows, []string{
+			truncateString(db.ID, 12),
+			truncateString(db.Name, 20),
+			db.Type,
+			db.Engine,
+			db.Region,
+			string(db.Status),
+			fmt.Sprintf("%.1f", db.CPUUtilization),
+			fmt.Sprintf("%.1f", db.StorageUtilization),
+		})
+	}
+	databaseTable.Rows = dbRows
+}
+
+// updateKubernetesTabData updates data for the Kubernetes tab
+func (a *App) updateKubernetesTabData() {
+	if a.kubernetesCollector == nil {
+		return
+	}
+
+	// Get tab
+	tab := a.getTabByName("Kubernetes")
+	if tab == nil || len(tab.panels) < 1 || len(tab.tables) < 2 {
+		return
+	}
+
+	overviewPanel := tab.panels[0]
+	podsTable := tab.tables[0]
+	deploymentsTable := tab.tables[1]
+
+	// Get latest metrics
+	rawMetrics := a.kubernetesCollector.GetLatestMetrics()
+
+	// Type assertion
+	var metrics models.KubernetesMetrics
+	if k8sMetrics, ok := rawMetrics.(models.KubernetesMetrics); ok {
+		metrics = k8sMetrics
+	} else {
+		// Unable to cast, return
+		return
+	}
+
+	// Update overview panel
+	overviewText := fmt.Sprintf(
+		"Cluster: %s\nContext: %s\nNamespaces: %s\nNodes: %d\nPods: %d\nDeployments: %d\nServices: %d\nLast Updated: %s",
+		metrics.ClusterName,
+		metrics.Context,
+		strings.Join(metrics.Namespaces, ", "),
+		len(metrics.Nodes),
+		len(metrics.Pods),
+		len(metrics.Deployments),
+		len(metrics.Services),
+		metrics.LastUpdated.Format("15:04:05"),
+	)
+	overviewPanel.Text = overviewText
+
+	// Update pods table
+	podRows := [][]string{
+		{"Name", "Namespace", "Status", "Node", "Restarts", "Age", "CPU", "MEM"},
+	}
+
+	for _, pod := range metrics.Pods {
+		podRows = append(podRows, []string{
+			truncateString(pod.Name, 20),
+			pod.Namespace,
+			pod.Status,
+			truncateString(pod.Node, 15),
+			fmt.Sprintf("%d", pod.RestartCount),
+			formatDurationSince(pod.StartTime),
+			fmt.Sprintf("%d", pod.ResourceUsage.CPUUsage),
+			formatBytes(uint64(pod.ResourceUsage.MemoryUsage)),
+		})
+	}
+	podsTable.Rows = podRows
+
+	// Update deployments table
+	deploymentRows := [][]string{
+		{"Name", "Namespace", "Replicas", "Available", "Up-to-date", "Age"},
+	}
+
+	for _, deployment := range metrics.Deployments {
+		deploymentRows = append(deploymentRows, []string{
+			truncateString(deployment.Name, 20),
+			deployment.Namespace,
+			fmt.Sprintf("%d", deployment.DesiredReplicas),
+			fmt.Sprintf("%d", deployment.AvailableReplicas),
+			fmt.Sprintf("%d", deployment.UpdatedReplicas),
+			formatDuration(deployment.Age),
+		})
+	}
+	deploymentsTable.Rows = deploymentRows
+}
+
+// updateCICDTabData updates data for the CI/CD tab
+func (a *App) updateCICDTabData() {
+	if a.cicdCollector == nil {
+		return
+	}
+
+	// Get tab
+	tab := a.getTabByName("CI/CD")
+	if tab == nil || len(tab.tables) < 2 {
+		return
+	}
+
+	workflowsTable := tab.tables[0]
+	runsTable := tab.tables[1]
+
+	// Get latest metrics
+	rawMetrics := a.cicdCollector.GetLatestMetrics()
+
+	// Type assertion
+	var metrics models.CICDMetrics
+	if cicdMetrics, ok := rawMetrics.(models.CICDMetrics); ok {
+		metrics = cicdMetrics
+	} else {
+		// Unable to cast, return
+		return
+	}
+
+	// Update workflows table
+	workflowRows := [][]string{
+		{"Name", "Repository", "Status", "Success Rate", "Last Run", "Duration"},
+	}
+
+	for _, workflow := range metrics.Workflows {
+		workflowRows = append(workflowRows, []string{
+			truncateString(workflow.Name, 20),
+			truncateString(workflow.Repository, 20),
+			string(workflow.LastRunStatus),
+			fmt.Sprintf("%.1f%%", workflow.SuccessRate),
+			formatTime(workflow.LastRunTime),
+			formatDuration(workflow.AverageDuration),
+		})
+	}
+	workflowsTable.Rows = workflowRows
+
+	// Update runs table
+	runRows := [][]string{
+		{"ID", "Workflow", "Status", "Started", "Duration", "Trigger", "Branch", "Commit"},
+	}
+
+	// Collect all runs from all workflows
+	var allRuns []models.CICDRunMetrics
+	for _, workflow := range metrics.Workflows {
+		for _, run := range workflow.RecentRuns {
+			allRuns = append(allRuns, run)
+		}
+	}
+
+	// Sort runs by start time (most recent first) if we had a sort function
+	// For now, just use them as they come
+
+	// Take the most recent 10 runs (or all if less than 10)
+	maxRuns := 10
+	if len(allRuns) > maxRuns {
+		allRuns = allRuns[:maxRuns]
+	}
+
+	for _, run := range allRuns {
+		duration := ""
+		if !run.EndTime.IsZero() {
+			duration = formatDuration(run.Duration)
+		} else {
+			duration = "Running..."
+		}
+
+		runRows = append(runRows, []string{
+			truncateString(run.ID, 10),
+			findWorkflowName(metrics.Workflows, run.ID),
+			string(run.Status),
+			formatTime(run.StartTime),
+			duration,
+			run.Trigger,
+			truncateString(run.Branch, 15),
+			truncateString(run.Commit, 10),
+		})
+	}
+	runsTable.Rows = runRows
+}
+
 // StartApp starts the terminal UI application
 func StartApp(cfg *config.Config, storageProvider collector.StorageProvider) error {
 	app := NewApp(cfg)
@@ -2691,4 +3159,108 @@ func (a *App) loadPlugin() {
 	// In a real implementation, this would show a file picker dialog
 	// For now, we'll just set a message in the status bar
 	a.statusBar.Text = "Plugin loading not implemented yet. See the development roadmap."
+}
+
+// SetCloudCollector sets the cloud metrics collector
+func (a *App) SetCloudCollector(collector interface{ GetLatestMetrics() interface{} }) {
+	a.cloudCollector = collector
+}
+
+// SetKubernetesCollector sets the Kubernetes metrics collector
+func (a *App) SetKubernetesCollector(collector interface{ GetLatestMetrics() interface{} }) {
+	a.kubernetesCollector = collector
+}
+
+// SetCICDCollector sets the CI/CD metrics collector
+func (a *App) SetCICDCollector(collector interface{ GetLatestMetrics() interface{} }) {
+	a.cicdCollector = collector
+}
+
+// SetStorage sets the storage interface
+func (a *App) SetStorage(storage StorageInterface) {
+	a.storage = storage
+}
+
+// Helper functions
+
+// getTabByName returns a tab by its name
+func (a *App) getTabByName(name string) *Tab {
+	for _, tab := range a.tabs {
+		if tab.name == name {
+			return tab
+		}
+	}
+	return nil
+}
+
+// truncateString truncates a string to a maximum length
+func truncateString(s string, maxLength int) string {
+	if len(s) <= maxLength {
+		return s
+	}
+	return s[:maxLength-3] + "..."
+}
+
+// formatBytes formats bytes to a human-readable string
+func formatBytes(bytes uint64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := uint64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+// formatDurationSince formats a duration since a time
+func formatDurationSince(t time.Time) string {
+	return formatDuration(time.Since(t))
+}
+
+// formatDuration formats a duration to a human-readable string
+func formatDuration(d time.Duration) string {
+	if d.Hours() > 24 {
+		days := int(d.Hours() / 24)
+		return fmt.Sprintf("%dd", days)
+	} else if d.Hours() >= 1 {
+		return fmt.Sprintf("%.1fh", d.Hours())
+	} else if d.Minutes() >= 1 {
+		return fmt.Sprintf("%.1fm", d.Minutes())
+	}
+	return fmt.Sprintf("%.1fs", d.Seconds())
+}
+
+// formatTime formats a time to a human-readable string
+func formatTime(t time.Time) string {
+	if t.IsZero() {
+		return "N/A"
+	}
+
+	now := time.Now()
+	diff := now.Sub(t)
+
+	if diff < time.Minute {
+		return "Just now"
+	} else if diff < time.Hour {
+		return fmt.Sprintf("%dm ago", int(diff.Minutes()))
+	} else if diff < 24*time.Hour {
+		return fmt.Sprintf("%dh ago", int(diff.Hours()))
+	}
+
+	return t.Format("Jan 2 15:04")
+}
+
+// findWorkflowName finds the workflow name for a run ID
+func findWorkflowName(workflows []models.CICDWorkflowMetrics, runID string) string {
+	for _, workflow := range workflows {
+		for _, run := range workflow.RecentRuns {
+			if strings.Contains(run.ID, runID) {
+				return workflow.Name
+			}
+		}
+	}
+	return "Unknown"
 }

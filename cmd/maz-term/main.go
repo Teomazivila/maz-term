@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/Teomazivila/maz-term/internal/storage"
+	"github.com/Teomazivila/maz-term/pkg/collector"
 	"github.com/Teomazivila/maz-term/pkg/config"
 	"github.com/Teomazivila/maz-term/pkg/ui"
 )
@@ -58,8 +61,40 @@ func main() {
 		}
 	}
 
+	// Create app with extended integrations support
+	app := ui.NewApp(cfg)
+
+	// Set the storage provider if available
+	if storageAdapter != nil {
+		app.SetStorageProvider(storageAdapter)
+
+		// For the UI storage features
+		app.SetStorage(storageAdapter)
+	}
+
+	// Initialize and use mock collectors for extended integrations
+	fmt.Println("Initializing mock collectors for extended integrations...")
+
+	// Create context for collectors
+	ctx := context.Background()
+
+	// Initialize mock cloud collector
+	cloudCollector := collector.NewMockCloudCollector()
+	cloudCollector.Start(ctx, 5*time.Second)
+	app.SetCloudCollector(cloudCollector)
+
+	// Initialize mock Kubernetes collector
+	k8sCollector := collector.NewMockKubernetesCollector()
+	k8sCollector.Start(ctx, 5*time.Second)
+	app.SetKubernetesCollector(k8sCollector)
+
+	// Initialize mock CI/CD collector
+	cicdCollector := collector.NewMockCICDCollector()
+	cicdCollector.Start(ctx, 5*time.Second)
+	app.SetCICDCollector(cicdCollector)
+
 	// Run the TermUI implementation
-	if err := ui.StartApp(cfg, storageAdapter); err != nil {
+	if err := app.Run(); err != nil {
 		fmt.Printf("Error running application: %v\n", err)
 		os.Exit(1)
 	}

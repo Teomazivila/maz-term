@@ -59,6 +59,42 @@ func (a *Adapter) StoreGitMetrics(metrics interface{}) error {
 	return a.db.StoreGitMetrics(gitMetrics)
 }
 
+// StoreCloudMetrics stores cloud provider metrics in the database
+func (a *Adapter) StoreCloudMetrics(metrics interface{}) error {
+	// Type assertion to get the concrete type
+	cloudMetrics, ok := metrics.(models.CloudProviderMetrics)
+	if !ok {
+		return fmt.Errorf("invalid metrics type: expected CloudProviderMetrics")
+	}
+
+	// Store the metrics in the database
+	return a.db.StoreCloudMetrics(cloudMetrics)
+}
+
+// StoreKubernetesMetrics stores Kubernetes metrics in the database
+func (a *Adapter) StoreKubernetesMetrics(metrics interface{}) error {
+	// Type assertion to get the concrete type
+	k8sMetrics, ok := metrics.(models.KubernetesMetrics)
+	if !ok {
+		return fmt.Errorf("invalid metrics type: expected KubernetesMetrics")
+	}
+
+	// Store the metrics in the database
+	return a.db.StoreKubernetesMetrics(k8sMetrics)
+}
+
+// StoreCICDMetrics stores CI/CD metrics in the database
+func (a *Adapter) StoreCICDMetrics(metrics interface{}) error {
+	// Type assertion to get the concrete type
+	cicdMetrics, ok := metrics.(models.CICDMetrics)
+	if !ok {
+		return fmt.Errorf("invalid metrics type: expected CICDMetrics")
+	}
+
+	// Store the metrics in the database
+	return a.db.StoreCICDMetrics(cicdMetrics)
+}
+
 // GetCPUUsageHistory fetches historical CPU usage data
 func (a *Adapter) GetCPUUsageHistory(period time.Duration, points int) ([]models.TimeSeriesPoint, error) {
 	return a.db.GetCPUUsageHistory(period, points)
