@@ -127,7 +127,7 @@ func (c *BaseCloudCollector) Start(ctx context.Context, interval time.Duration) 
 			select {
 			case <-ticker.C:
 				c.collect(ctx)
-			case <-c.stopChan:
+			case <-c.Context().Done():
 				return
 			case <-ctx.Done():
 				return

@@ -100,7 +100,7 @@ func (c *GitHubActionsCollector) Start(ctx context.Context, interval time.Durati
 				if err == nil {
 					c.UpdateData(data)
 				}
-			case <-c.stopChan:
+			case <-c.Context().Done():
 				return
 			case <-ctx.Done():
 				return

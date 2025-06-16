@@ -2,10 +2,15 @@ package plugins
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"plugin"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/Teomazivila/maz-term/pkg/models"
+	"github.com/fsnotify/fsnotify"
 )
 
 // Plugin represents a plugin for the terminal dashboard
@@ -40,17 +45,357 @@ type Plugin interface {
 
 // PluginManager manages plugins for the terminal dashboard
 type PluginManager struct {
-	plugins     map[string]Plugin
-	pluginPaths map[string]string
-	mutex       sync.RWMutex
+	plugins        map[string]Plugin
+	pluginPaths    map[string]string
+	mutex          sync.RWMutex
+	enabledPlugins []string
+	watcher        *fsnotify.Watcher
+	watcherActive  bool
+	watcherStop    chan struct{}
+	onPluginChange func(name string, event string)
 }
 
 // NewPluginManager creates a new plugin manager
 func NewPluginManager() *PluginManager {
 	return &PluginManager{
-		plugins:     make(map[string]Plugin),
-		pluginPaths: make(map[string]string),
+		plugins:        make(map[string]Plugin),
+		pluginPaths:    make(map[string]string),
+		enabledPlugins: []string{},
+		watcherActive:  false,
+		watcherStop:    make(chan struct{}),
 	}
+}
+
+// SetChangeCallback sets a callback function that gets called when a plugin changes
+func (pm *PluginManager) SetChangeCallback(callback func(name string, event string)) {
+	pm.mutex.Lock()
+	defer pm.mutex.Unlock()
+	pm.onPluginChange = callback
+}
+
+// StartWatcher starts watching the plugins directory for changes
+func (pm *PluginManager) StartWatcher(directory string) error {
+	pm.mutex.Lock()
+	defer pm.mutex.Unlock()
+
+	// Don't start if already watching
+	if pm.watcherActive {
+		return nil
+	}
+
+	// Create a new watcher
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return fmt.Errorf("failed to create file watcher: %w", err)
+	}
+
+	// Add the directory to watch
+	if err := watcher.Add(directory); err != nil {
+		watcher.Close()
+		return fmt.Errorf("failed to watch directory %s: %w", directory, err)
+	}
+
+	// Also watch subdirectories
+	err = filepath.Walk(directory, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			if err := watcher.Add(path); err != nil {
+				return fmt.Errorf("failed to watch directory %s: %w", path, err)
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		watcher.Close()
+		return fmt.Errorf("failed to watch subdirectories: %w", err)
+	}
+
+	pm.watcher = watcher
+	pm.watcherActive = true
+	pm.watcherStop = make(chan struct{})
+
+	// Start the watcher goroutine
+	go pm.watchPlugins(directory)
+
+	return nil
+}
+
+// StopWatcher stops watching the plugins directory
+func (pm *PluginManager) StopWatcher() {
+	pm.mutex.Lock()
+	defer pm.mutex.Unlock()
+
+	if !pm.watcherActive {
+		return
+	}
+
+	// Signal the watcher goroutine to stop
+	close(pm.watcherStop)
+
+	// Wait a moment for the goroutine to exit
+	time.Sleep(100 * time.Millisecond)
+
+	// Close the watcher
+	if pm.watcher != nil {
+		pm.watcher.Close()
+		pm.watcher = nil
+	}
+
+	pm.watcherActive = false
+}
+
+// watchPlugins watches for changes in the plugins directory
+func (pm *PluginManager) watchPlugins(directory string) {
+	defer func() {
+		pm.mutex.Lock()
+		pm.watcherActive = false
+		if pm.watcher != nil {
+			pm.watcher.Close()
+			pm.watcher = nil
+		}
+		pm.mutex.Unlock()
+	}()
+
+	debounceMap := make(map[string]time.Time)
+	debounceDelay := 500 * time.Millisecond
+
+	for {
+		select {
+		case <-pm.watcherStop:
+			return
+		case event, ok := <-pm.watcher.Events:
+			if !ok {
+				return
+			}
+
+			// Only process .so files
+			if !strings.HasSuffix(event.Name, ".so") {
+				continue
+			}
+
+			// Debounce events (many editors trigger multiple events on save)
+			now := time.Now()
+			lastEvent, exists := debounceMap[event.Name]
+			if exists && now.Sub(lastEvent) < debounceDelay {
+				continue
+			}
+			debounceMap[event.Name] = now
+
+			// Process the event
+			if event.Op&(fsnotify.Create|fsnotify.Write) != 0 {
+				// File created or modified
+				pm.handlePluginChange(event.Name, directory)
+			} else if event.Op&fsnotify.Remove != 0 {
+				// File removed
+				pm.handlePluginRemoval(event.Name)
+			}
+		case err, ok := <-pm.watcher.Errors:
+			if !ok {
+				return
+			}
+			fmt.Printf("Watcher error: %v\n", err)
+		}
+	}
+}
+
+// handlePluginChange reloads a plugin after it has changed
+func (pm *PluginManager) handlePluginChange(filePath string, directory string) {
+	// Find if this is an existing plugin
+	pm.mutex.RLock()
+	var existingName string
+	for name, path := range pm.pluginPaths {
+		if path == filePath {
+			existingName = name
+			break
+		}
+	}
+	callback := pm.onPluginChange
+	pm.mutex.RUnlock()
+
+	// If it's an existing plugin, unload it first
+	if existingName != "" {
+		if err := pm.UnloadPlugin(existingName); err != nil {
+			fmt.Printf("Failed to unload plugin %s: %v\n", existingName, err)
+			return
+		}
+	}
+
+	// Try to load the plugin
+	if err := pm.LoadPlugin(filePath); err != nil {
+		fmt.Printf("Failed to load modified plugin %s: %v\n", filePath, err)
+		if callback != nil {
+			callback(filepath.Base(filePath), "error")
+		}
+		return
+	}
+
+	// Get the new plugin name
+	pm.mutex.RLock()
+	var newName string
+	for name, path := range pm.pluginPaths {
+		if path == filePath {
+			newName = name
+			break
+		}
+	}
+	pm.mutex.RUnlock()
+
+	// Initialize the plugin if it's in the enabled list
+	if newName != "" {
+		pm.mutex.RLock()
+		isEnabled := false
+		for _, enabled := range pm.enabledPlugins {
+			if enabled == newName {
+				isEnabled = true
+				break
+			}
+		}
+		pm.mutex.RUnlock()
+
+		if isEnabled {
+			// Initialize the plugin later when we have access to the configuration
+			if callback != nil {
+				callback(newName, "reloaded")
+			}
+		}
+	}
+}
+
+// handlePluginRemoval handles a plugin being removed
+func (pm *PluginManager) handlePluginRemoval(filePath string) {
+	// Find if this is an existing plugin
+	pm.mutex.RLock()
+	var existingName string
+	for name, path := range pm.pluginPaths {
+		if path == filePath {
+			existingName = name
+			break
+		}
+	}
+	callback := pm.onPluginChange
+	pm.mutex.RUnlock()
+
+	// If it's an existing plugin, unload it
+	if existingName != "" {
+		if err := pm.UnloadPlugin(existingName); err != nil {
+			fmt.Printf("Failed to unload removed plugin %s: %v\n", existingName, err)
+			return
+		}
+
+		if callback != nil {
+			callback(existingName, "removed")
+		}
+	}
+}
+
+// SetEnabledPlugins sets the list of enabled plugins
+func (pm *PluginManager) SetEnabledPlugins(enabled []string) {
+	pm.mutex.Lock()
+	defer pm.mutex.Unlock()
+	pm.enabledPlugins = enabled
+}
+
+// ScanDirectory scans a directory for plugins and loads the enabled ones
+func (pm *PluginManager) ScanDirectory(directory string) ([]string, []error) {
+	pm.mutex.Lock()
+	defer pm.mutex.Unlock()
+
+	var loaded []string
+	var errors []error
+
+	// Check if directory exists
+	if _, err := os.Stat(directory); os.IsNotExist(err) {
+		return nil, []error{fmt.Errorf("plugin directory does not exist: %s", directory)}
+	}
+
+	// Walk through the directory and its subdirectories
+	err := filepath.Walk(directory, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// Skip directories and non-plugin files
+		if info.IsDir() {
+			return nil
+		}
+
+		// Check if file is a plugin (*.so)
+		if !strings.HasSuffix(path, ".so") {
+			return nil
+		}
+
+		// Try to load the plugin
+		if err := pm.LoadPlugin(path); err != nil {
+			errors = append(errors, fmt.Errorf("failed to load plugin %s: %w", path, err))
+			return nil
+		}
+
+		// Get the plugin name (should be set after loading)
+		// We need to find the most recently loaded plugin
+		var pluginName string
+		for name, pluginPath := range pm.pluginPaths {
+			if pluginPath == path {
+				pluginName = name
+				break
+			}
+		}
+
+		if pluginName != "" {
+			loaded = append(loaded, pluginName)
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		errors = append(errors, fmt.Errorf("error walking plugin directory: %w", err))
+	}
+
+	return loaded, errors
+}
+
+// LoadEnabledPlugins loads only the plugins that are enabled in the configuration
+func (pm *PluginManager) LoadEnabledPlugins(directory string) ([]string, []error) {
+	pm.mutex.RLock()
+	enabledPlugins := pm.enabledPlugins
+	pm.mutex.RUnlock()
+
+	var loaded []string
+	var errors []error
+
+	// Check if directory exists
+	if _, err := os.Stat(directory); os.IsNotExist(err) {
+		return nil, []error{fmt.Errorf("plugin directory does not exist: %s", directory)}
+	}
+
+	// For each enabled plugin, look for a matching plugin file
+	for _, pluginName := range enabledPlugins {
+		// Look for the plugin in a subdirectory named after the plugin
+		pluginPath := filepath.Join(directory, pluginName, pluginName+".so")
+
+		// Check if plugin file exists
+		if _, err := os.Stat(pluginPath); os.IsNotExist(err) {
+			// Also try with plugin in root directory
+			pluginPath = filepath.Join(directory, pluginName+".so")
+			if _, err := os.Stat(pluginPath); os.IsNotExist(err) {
+				errors = append(errors, fmt.Errorf("plugin file not found for %s", pluginName))
+				continue
+			}
+		}
+
+		// Try to load the plugin
+		if err := pm.LoadPlugin(pluginPath); err != nil {
+			errors = append(errors, fmt.Errorf("failed to load plugin %s: %w", pluginName, err))
+			continue
+		}
+
+		loaded = append(loaded, pluginName)
+	}
+
+	return loaded, errors
 }
 
 // LoadPlugin loads a plugin from the given path
@@ -209,4 +554,18 @@ func (pm *PluginManager) ShutdownAll() []error {
 	pm.pluginPaths = make(map[string]string)
 
 	return errors
+}
+
+// GetPluginPaths returns a map of plugin name to plugin path
+func (pm *PluginManager) GetPluginPaths() map[string]string {
+	pm.mutex.RLock()
+	defer pm.mutex.RUnlock()
+
+	// Create a copy of the map to avoid concurrent map access
+	paths := make(map[string]string, len(pm.pluginPaths))
+	for name, path := range pm.pluginPaths {
+		paths[name] = path
+	}
+
+	return paths
 }

@@ -187,6 +187,92 @@ func (d *Database) GetUnreadNotificationCount() (int, error) {
 	return count, nil
 }
 
+// GetFilteredNotifications retrieves notifications with filters
+func (d *Database) GetFilteredNotifications(count int, includeRead bool, sources []string, severities []string) ([]models.Notification, error) {
+	// Prepare base query
+	query := `
+		SELECT id, title, message, timestamp, severity, source, read, dismissed, action_url, action_label, tags
+		FROM notifications
+		WHERE dismissed = 0
+	`
+
+	// Add read filter if needed
+	if !includeRead {
+		query += " AND read = 0"
+	}
+
+	// Add source filter if specified
+	if len(sources) > 0 {
+		sourceParams := make([]string, len(sources))
+		for i, source := range sources {
+			sourceParams[i] = fmt.Sprintf("'%s'", source)
+		}
+		query += fmt.Sprintf(" AND source IN (%s)", strings.Join(sourceParams, ","))
+	}
+
+	// Add severity filter if specified
+	if len(severities) > 0 {
+		severityParams := make([]string, len(severities))
+		for i, severity := range severities {
+			severityParams[i] = fmt.Sprintf("'%s'", severity)
+		}
+		query += fmt.Sprintf(" AND severity IN (%s)", strings.Join(severityParams, ","))
+	}
+
+	// Add order and limit
+	query += " ORDER BY timestamp DESC"
+	if count > 0 {
+		query += fmt.Sprintf(" LIMIT %d", count)
+	}
+
+	// Execute query
+	rows, err := d.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query notifications: %w", err)
+	}
+	defer rows.Close()
+
+	// Parse results
+	notifications := []models.Notification{}
+	for rows.Next() {
+		var n models.Notification
+		var timestamp int64
+		var read, dismissed int
+		var tags string
+
+		err := rows.Scan(
+			&n.ID,
+			&n.Title,
+			&n.Message,
+			&timestamp,
+			&n.Severity,
+			&n.Source,
+			&read,
+			&dismissed,
+			&n.ActionURL,
+			&n.ActionLabel,
+			&tags,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan notification row: %w", err)
+		}
+
+		// Convert values
+		n.Timestamp = time.Unix(timestamp, 0)
+		n.Read = intToBool(read)
+		n.Dismissed = intToBool(dismissed)
+
+		// Parse tags if not empty
+		if tags != "" {
+			n.Tags = parseTags(tags)
+		}
+
+		notifications = append(notifications, n)
+	}
+
+	return notifications, nil
+}
+
 // Helper functions
 func boolToInt(b bool) int {
 	if b {

@@ -94,6 +94,33 @@ type PluginsConfig struct {
 	Settings  map[string]interface{} `mapstructure:"settings"`
 }
 
+// AWSConfig contains configuration for AWS integration
+type AWSConfig struct {
+	Region            string   `mapstructure:"region"`
+	AccessKeyID       string   `mapstructure:"access_key_id"`
+	SecretAccessKey   string   `mapstructure:"secret_access_key"`
+	Profile           string   `mapstructure:"profile"`
+	AdditionalRegions []string `mapstructure:"additional_regions"`
+	Resources         []string `mapstructure:"resources"`
+}
+
+// GitHubConfig contains configuration for GitHub integration
+type GitHubConfig struct {
+	Token        string   `mapstructure:"token"`
+	Organization string   `mapstructure:"organization"`
+	Owner        string   `mapstructure:"owner"`
+	Repositories []string `mapstructure:"repositories"`
+}
+
+// KubernetesConfig contains configuration for Kubernetes integration
+type KubernetesConfig struct {
+	ConfigPath string   `mapstructure:"config_path"`
+	Context    string   `mapstructure:"context"`
+	Namespace  string   `mapstructure:"namespace"`
+	Namespaces []string `mapstructure:"namespaces"`
+	Resources  []string `mapstructure:"resources"`
+}
+
 // LoadConfig loads the application configuration from the specified file
 func LoadConfig(configPath string) (*Config, error) {
 	v := viper.New()

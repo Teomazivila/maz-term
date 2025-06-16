@@ -15,12 +15,20 @@ import (
 	"github.com/shirou/gopsutil/v3/net"
 )
 
+// Subscriber represents a subscription with context for cleanup
+type Subscriber struct {
+	ch     chan models.SystemMetrics
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
 // SystemMetricsCollector collects system metrics
 type SystemMetricsCollector struct {
 	*BaseCollector
-	metrics      models.SystemMetrics
-	mutex        sync.RWMutex
-	subscription []chan models.SystemMetrics
+	metrics     models.SystemMetrics
+	mutex       sync.RWMutex
+	subscribers map[string]*Subscriber
+	subMutex    sync.RWMutex
 }
 
 // NewSystemMetricsCollector creates a new system metrics collector
@@ -28,7 +36,7 @@ func NewSystemMetricsCollector() *SystemMetricsCollector {
 	return &SystemMetricsCollector{
 		BaseCollector: NewBaseCollector("system_metrics"),
 		metrics:       models.SystemMetrics{},
-		subscription:  []chan models.SystemMetrics{},
+		subscribers:   make(map[string]*Subscriber),
 	}
 }
 
@@ -93,20 +101,60 @@ func (c *SystemMetricsCollector) Collect(ctx context.Context) (interface{}, erro
 	c.metrics = metrics
 	c.mutex.Unlock()
 
-	// Notify subscribers
-	for _, ch := range c.subscription {
-		select {
-		case ch <- metrics:
-			// Successfully sent
-		default:
-			// Channel is full or closed, skip
-		}
-	}
+	// Notify subscribers with proper cleanup of dead channels
+	c.notifySubscribers(metrics)
 
 	// Store the metrics in the database
 	c.StoreData("", metrics, "system")
 
 	return metrics, nil
+}
+
+// notifySubscribers sends metrics to all active subscribers
+func (c *SystemMetricsCollector) notifySubscribers(metrics models.SystemMetrics) {
+	c.subMutex.RLock()
+	subscribers := make([]*Subscriber, 0, len(c.subscribers))
+	for _, sub := range c.subscribers {
+		subscribers = append(subscribers, sub)
+	}
+	c.subMutex.RUnlock()
+
+	// Send to subscribers in parallel to avoid blocking
+	var wg sync.WaitGroup
+	for _, sub := range subscribers {
+		wg.Add(1)
+		go func(s *Subscriber) {
+			defer wg.Done()
+			select {
+			case s.ch <- metrics:
+				// Successfully sent
+			case <-s.ctx.Done():
+				// Subscriber context cancelled, will be cleaned up
+			case <-time.After(100 * time.Millisecond):
+				// Channel is blocked, skip this subscriber
+			}
+		}(sub)
+	}
+	wg.Wait()
+
+	// Clean up cancelled subscribers
+	c.cleanupDeadSubscribers()
+}
+
+// cleanupDeadSubscribers removes subscribers with cancelled contexts
+func (c *SystemMetricsCollector) cleanupDeadSubscribers() {
+	c.subMutex.Lock()
+	defer c.subMutex.Unlock()
+
+	for id, sub := range c.subscribers {
+		select {
+		case <-sub.ctx.Done():
+			close(sub.ch)
+			delete(c.subscribers, id)
+		default:
+			// Subscriber is still active
+		}
+	}
 }
 
 // GetLatestMetrics returns the latest metrics
@@ -117,24 +165,35 @@ func (c *SystemMetricsCollector) GetLatestMetrics() models.SystemMetrics {
 }
 
 // Subscribe returns a channel that will receive metrics updates
-func (c *SystemMetricsCollector) Subscribe() chan models.SystemMetrics {
+func (c *SystemMetricsCollector) Subscribe(ctx context.Context) (chan models.SystemMetrics, string) {
+	subCtx, cancel := context.WithCancel(ctx)
 	ch := make(chan models.SystemMetrics, 10)
-	c.mutex.Lock()
-	c.subscription = append(c.subscription, ch)
-	c.mutex.Unlock()
-	return ch
+
+	// Generate unique ID for this subscriber
+	id := fmt.Sprintf("sub_%d_%d", time.Now().UnixNano(), len(c.subscribers))
+
+	subscriber := &Subscriber{
+		ch:     ch,
+		ctx:    subCtx,
+		cancel: cancel,
+	}
+
+	c.subMutex.Lock()
+	c.subscribers[id] = subscriber
+	c.subMutex.Unlock()
+
+	return ch, id
 }
 
 // Unsubscribe removes a subscription channel
-func (c *SystemMetricsCollector) Unsubscribe(ch chan models.SystemMetrics) {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-	for i, subCh := range c.subscription {
-		if subCh == ch {
-			c.subscription = append(c.subscription[:i], c.subscription[i+1:]...)
-			close(ch)
-			break
-		}
+func (c *SystemMetricsCollector) Unsubscribe(id string) {
+	c.subMutex.Lock()
+	defer c.subMutex.Unlock()
+
+	if sub, exists := c.subscribers[id]; exists {
+		sub.cancel()
+		close(sub.ch)
+		delete(c.subscribers, id)
 	}
 }
 
@@ -157,16 +216,30 @@ func (c *SystemMetricsCollector) Start(ctx context.Context, interval time.Durati
 		for {
 			select {
 			case <-ticker.C:
-				_, _ = c.Collect(ctx) // Ignore errors during background collection
-			case <-c.stopChan:
-				return
-			case <-ctx.Done():
+				if collectorCtx := c.Context(); collectorCtx != nil {
+					_, _ = c.Collect(collectorCtx) // Ignore errors during background collection
+				}
+			case <-c.Context().Done():
+				// Clean up all subscribers when collector stops
+				c.cleanupAllSubscribers()
 				return
 			}
 		}
 	}()
 
 	return nil
+}
+
+// cleanupAllSubscribers closes all subscriber channels
+func (c *SystemMetricsCollector) cleanupAllSubscribers() {
+	c.subMutex.Lock()
+	defer c.subMutex.Unlock()
+
+	for id, sub := range c.subscribers {
+		sub.cancel()
+		close(sub.ch)
+		delete(c.subscribers, id)
+	}
 }
 
 // collectCPUMetrics collects CPU metrics

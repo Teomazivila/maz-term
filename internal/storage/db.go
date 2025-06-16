@@ -1,28 +1,39 @@
 package storage
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/Teomazivila/maz-term/pkg/models"
 	_ "github.com/mattn/go-sqlite3" // SQLite driver
 )
 
-// Database represents a SQLite database connection
+// Database represents a SQLite database connection with proper resource management
 type Database struct {
 	db              *sql.DB
 	dataPath        string
 	retentionPeriod time.Duration
+	ctx             context.Context
+	cancel          context.CancelFunc
+	cleanupWG       sync.WaitGroup
+	logger          *slog.Logger
 }
 
 // Config holds the database configuration
 type Config struct {
 	DataPath        string        // Path to the database file
 	RetentionPeriod time.Duration // How long to keep historical data
+	MaxOpenConns    int           // Maximum number of open connections
+	MaxIdleConns    int           // Maximum number of idle connections
+	ConnMaxLifetime time.Duration // Maximum connection lifetime
+	Logger          *slog.Logger  // Structured logger
 }
 
 // DefaultConfig returns a default configuration
@@ -35,10 +46,14 @@ func DefaultConfig() *Config {
 	return &Config{
 		DataPath:        filepath.Join(homeDir, ".config", "maz-term", "data.db"),
 		RetentionPeriod: 7 * 24 * time.Hour, // 7 days
+		MaxOpenConns:    25,                 // SQLite recommended max
+		MaxIdleConns:    5,
+		ConnMaxLifetime: 5 * time.Minute,
+		Logger:          slog.Default(),
 	}
 }
 
-// New creates a new database connection
+// New creates a new database connection with proper resource management
 func New(config *Config) (*Database, error) {
 	if config == nil {
 		config = DefaultConfig()
@@ -50,46 +65,82 @@ func New(config *Config) (*Database, error) {
 		return nil, fmt.Errorf("failed to create database directory: %w", err)
 	}
 
-	// Connect to the database
-	db, err := sql.Open("sqlite3", config.DataPath)
+	// Connect to the database with proper connection string
+	dsn := fmt.Sprintf("%s?_journal_mode=WAL&_synchronous=NORMAL&_cache_size=10000&_foreign_keys=ON", config.DataPath)
+	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Test the connection
-	if err := db.Ping(); err != nil {
+	// Configure connection pool
+	db.SetMaxOpenConns(config.MaxOpenConns)
+	db.SetMaxIdleConns(config.MaxIdleConns)
+	db.SetConnMaxLifetime(config.ConnMaxLifetime)
+
+	// Test the connection with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := db.PingContext(ctx); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
+
+	// Create cancellable context for background operations
+	dbCtx, dbCancel := context.WithCancel(context.Background())
 
 	// Create the database instance
 	database := &Database{
 		db:              db,
 		dataPath:        config.DataPath,
 		retentionPeriod: config.RetentionPeriod,
+		ctx:             dbCtx,
+		cancel:          dbCancel,
+		logger:          config.Logger,
 	}
 
 	// Initialize the schema
-	if err := database.initSchema(); err != nil {
+	if err := database.initSchema(dbCtx); err != nil {
 		db.Close()
+		dbCancel()
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
 	}
 
 	// Start periodic cleanup for retention policy
-	go database.startCleanupTask()
+	database.startCleanupTask()
+
+	database.logger.Info("Database initialized successfully",
+		"path", config.DataPath,
+		"retention_period", config.RetentionPeriod,
+		"max_open_conns", config.MaxOpenConns)
 
 	return database, nil
 }
 
-// Close closes the database connection
+// Close closes the database connection with proper cleanup
 func (d *Database) Close() error {
-	return d.db.Close()
+	d.logger.Info("Closing database connection")
+
+	// Cancel background operations
+	d.cancel()
+
+	// Wait for cleanup tasks to finish
+	d.cleanupWG.Wait()
+
+	// Close database connection
+	if err := d.db.Close(); err != nil {
+		d.logger.Error("Error closing database", "error", err)
+		return err
+	}
+
+	d.logger.Info("Database connection closed successfully")
+	return nil
 }
 
 // initSchema creates the database tables if they don't exist
-func (d *Database) initSchema() error {
+func (d *Database) initSchema(ctx context.Context) error {
 	// Create the system_metrics table
-	_, err := d.db.Exec(`
+	_, err := d.db.ExecContext(ctx, `
 	CREATE TABLE IF NOT EXISTS system_metrics (
 		id INTEGER PRIMARY KEY,
 		timestamp INTEGER NOT NULL,
@@ -103,7 +154,7 @@ func (d *Database) initSchema() error {
 	}
 
 	// Create the disk_metrics table
-	_, err = d.db.Exec(`
+	_, err = d.db.ExecContext(ctx, `
 	CREATE TABLE IF NOT EXISTS disk_metrics (
 		id INTEGER PRIMARY KEY,
 		timestamp INTEGER NOT NULL,
@@ -117,7 +168,7 @@ func (d *Database) initSchema() error {
 	}
 
 	// Create the http_metrics table
-	_, err = d.db.Exec(`
+	_, err = d.db.ExecContext(ctx, `
 	CREATE TABLE IF NOT EXISTS http_metrics (
 		id INTEGER PRIMARY KEY,
 		timestamp INTEGER NOT NULL,
@@ -132,7 +183,7 @@ func (d *Database) initSchema() error {
 	}
 
 	// Create the git_metrics table
-	_, err = d.db.Exec(`
+	_, err = d.db.ExecContext(ctx, `
 	CREATE TABLE IF NOT EXISTS git_metrics (
 		id INTEGER PRIMARY KEY,
 		timestamp INTEGER NOT NULL,
@@ -147,24 +198,17 @@ func (d *Database) initSchema() error {
 	}
 
 	// Create indexes for fast queries
-	_, err = d.db.Exec(`CREATE INDEX IF NOT EXISTS idx_system_metrics_timestamp ON system_metrics(timestamp)`)
-	if err != nil {
-		return fmt.Errorf("failed to create system_metrics index: %w", err)
+	indexes := []string{
+		"CREATE INDEX IF NOT EXISTS idx_system_metrics_timestamp ON system_metrics(timestamp)",
+		"CREATE INDEX IF NOT EXISTS idx_disk_metrics_timestamp ON disk_metrics(timestamp)",
+		"CREATE INDEX IF NOT EXISTS idx_http_metrics_timestamp ON http_metrics(timestamp)",
+		"CREATE INDEX IF NOT EXISTS idx_git_metrics_timestamp ON git_metrics(timestamp)",
 	}
 
-	_, err = d.db.Exec(`CREATE INDEX IF NOT EXISTS idx_disk_metrics_timestamp ON disk_metrics(timestamp)`)
-	if err != nil {
-		return fmt.Errorf("failed to create disk_metrics index: %w", err)
-	}
-
-	_, err = d.db.Exec(`CREATE INDEX IF NOT EXISTS idx_http_metrics_timestamp ON http_metrics(timestamp)`)
-	if err != nil {
-		return fmt.Errorf("failed to create http_metrics index: %w", err)
-	}
-
-	_, err = d.db.Exec(`CREATE INDEX IF NOT EXISTS idx_git_metrics_timestamp ON git_metrics(timestamp)`)
-	if err != nil {
-		return fmt.Errorf("failed to create git_metrics index: %w", err)
+	for _, indexSQL := range indexes {
+		if _, err := d.db.ExecContext(ctx, indexSQL); err != nil {
+			return fmt.Errorf("failed to create index: %w", err)
+		}
 	}
 
 	// Initialize notifications schema
@@ -175,61 +219,74 @@ func (d *Database) initSchema() error {
 	return nil
 }
 
-// startCleanupTask periodically cleans up old data
+// startCleanupTask periodically cleans up old data with proper resource management
 func (d *Database) startCleanupTask() {
-	ticker := time.NewTicker(6 * time.Hour)
-	defer ticker.Stop()
+	d.cleanupWG.Add(1)
+	go func() {
+		defer d.cleanupWG.Done()
 
-	for range ticker.C {
-		d.cleanupOldData()
-	}
+		ticker := time.NewTicker(6 * time.Hour)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				if err := d.cleanupOldData(); err != nil {
+					d.logger.Error("Failed to cleanup old data", "error", err)
+				}
+			case <-d.ctx.Done():
+				d.logger.Info("Cleanup task stopped")
+				return
+			}
+		}
+	}()
 }
 
-// cleanupOldData removes data older than the retention period
+// cleanupOldData removes data older than the retention period with proper transaction handling
 func (d *Database) cleanupOldData() error {
+	ctx, cancel := context.WithTimeout(d.ctx, 30*time.Second)
+	defer cancel()
+
 	// Calculate the cutoff time
 	cutoff := time.Now().Add(-d.retentionPeriod).Unix()
 
-	// Begin a transaction
-	tx, err := d.db.Begin()
+	// Begin a transaction with context
+	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		}
+	}()
 
-	// Delete old data from system_metrics
-	_, err = tx.Exec("DELETE FROM system_metrics WHERE timestamp < ?", cutoff)
-	if err != nil {
-		return fmt.Errorf("failed to delete old system metrics: %w", err)
-	}
+	// Delete old data from all tables
+	tables := []string{"system_metrics", "disk_metrics", "http_metrics", "git_metrics"}
+	totalDeleted := 0
 
-	// Delete old data from disk_metrics
-	_, err = tx.Exec("DELETE FROM disk_metrics WHERE timestamp < ?", cutoff)
-	if err != nil {
-		return fmt.Errorf("failed to delete old disk metrics: %w", err)
-	}
+	for _, table := range tables {
+		result, deleteErr := tx.ExecContext(ctx,
+			fmt.Sprintf("DELETE FROM %s WHERE timestamp < ?", table), cutoff)
+		if deleteErr != nil {
+			err = fmt.Errorf("failed to delete old data from %s: %w", table, deleteErr)
+			return err
+		}
 
-	// Delete old data from http_metrics
-	_, err = tx.Exec("DELETE FROM http_metrics WHERE timestamp < ?", cutoff)
-	if err != nil {
-		return fmt.Errorf("failed to delete old HTTP metrics: %w", err)
-	}
-
-	// Delete old data from git_metrics
-	_, err = tx.Exec("DELETE FROM git_metrics WHERE timestamp < ?", cutoff)
-	if err != nil {
-		return fmt.Errorf("failed to delete old Git metrics: %w", err)
+		if rowsAffected, _ := result.RowsAffected(); rowsAffected > 0 {
+			totalDeleted += int(rowsAffected)
+		}
 	}
 
 	// Commit the transaction
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit cleanup transaction: %w", err)
 	}
 
-	// Vacuum the database to reclaim space
-	_, err = d.db.Exec("VACUUM")
-	if err != nil {
-		return fmt.Errorf("failed to vacuum database: %w", err)
+	if totalDeleted > 0 {
+		d.logger.Info("Cleaned up old data",
+			"rows_deleted", totalDeleted,
+			"cutoff_time", time.Unix(cutoff, 0))
 	}
 
 	return nil

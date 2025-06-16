@@ -121,7 +121,7 @@ func (c *GitStatusCollector) Start(ctx context.Context, interval time.Duration) 
 			select {
 			case <-ticker.C:
 				_, _ = c.Collect(ctx) // Ignore errors during background collection
-			case <-c.stopChan:
+			case <-c.Context().Done():
 				return
 			case <-ctx.Done():
 				return

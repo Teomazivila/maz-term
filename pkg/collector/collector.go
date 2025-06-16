@@ -35,7 +35,8 @@ type Collector interface {
 type BaseCollector struct {
 	name       string
 	running    bool
-	stopChan   chan struct{}
+	ctx        context.Context
+	cancel     context.CancelFunc
 	mutex      sync.RWMutex
 	lastData   interface{}
 	lastUpdate time.Time
@@ -45,9 +46,8 @@ type BaseCollector struct {
 // NewBaseCollector creates a new base collector
 func NewBaseCollector(name string) *BaseCollector {
 	return &BaseCollector{
-		name:     name,
-		running:  false,
-		stopChan: make(chan struct{}),
+		name:    name,
+		running: false,
 	}
 }
 
@@ -58,7 +58,7 @@ func (c *BaseCollector) SetStorageProvider(provider StorageProvider) {
 	c.storage = provider
 }
 
-// Start starts the collector
+// Start starts the collector with proper context management
 func (c *BaseCollector) Start(ctx context.Context, interval time.Duration) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
@@ -67,13 +67,14 @@ func (c *BaseCollector) Start(ctx context.Context, interval time.Duration) error
 		return nil // Already running
 	}
 
+	// Create cancellable context for this collector
+	c.ctx, c.cancel = context.WithCancel(ctx)
 	c.running = true
-	c.stopChan = make(chan struct{})
 
 	return nil
 }
 
-// Stop stops the collector
+// Stop stops the collector with proper cleanup
 func (c *BaseCollector) Stop() error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
@@ -83,7 +84,9 @@ func (c *BaseCollector) Stop() error {
 	}
 
 	c.running = false
-	close(c.stopChan)
+	if c.cancel != nil {
+		c.cancel()
+	}
 
 	return nil
 }
@@ -125,19 +128,33 @@ func (c *BaseCollector) GetLastUpdateTime() time.Time {
 // StoreData attempts to store the data if a storage provider is available
 func (c *BaseCollector) StoreData(name string, data interface{}, storageType string) {
 	c.mutex.RLock()
-	defer c.mutex.RUnlock()
+	storage := c.storage
+	c.mutex.RUnlock()
 
-	if c.storage == nil {
+	if storage == nil {
 		return // No storage provider available
 	}
 
 	// Try to store the data based on the type
 	switch storageType {
 	case "system":
-		_ = c.storage.StoreSystemMetrics(data)
+		_ = storage.StoreSystemMetrics(data)
 	case "http":
-		_ = c.storage.StoreHTTPMetrics(name, data)
+		_ = storage.StoreHTTPMetrics(name, data)
 	case "git":
-		_ = c.storage.StoreGitMetrics(data)
+		_ = storage.StoreGitMetrics(data)
+	case "cloud":
+		_ = storage.StoreCloudMetrics(data)
+	case "kubernetes":
+		_ = storage.StoreKubernetesMetrics(data)
+	case "cicd":
+		_ = storage.StoreCICDMetrics(data)
 	}
+}
+
+// Context returns the collector's context for cancellation
+func (c *BaseCollector) Context() context.Context {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+	return c.ctx
 }

@@ -371,3 +371,61 @@ func (a *Adapter) ClearAllNotifications() error {
 func (a *Adapter) GetUnreadNotificationCount() (int, error) {
 	return a.db.GetUnreadNotificationCount()
 }
+
+// GetFilteredNotifications retrieves notifications with filtering options
+func (a *Adapter) GetFilteredNotifications(count int, includeRead bool, sources []string, severities []string) ([]models.Notification, error) {
+	// Get all notifications first
+	notifications, err := a.db.GetNotifications(count*2, includeRead) // Get more to account for filtering
+	if err != nil {
+		return nil, err
+	}
+
+	// Apply filters
+	var filtered []models.Notification
+	for _, notification := range notifications {
+		// Filter by sources if specified
+		if len(sources) > 0 {
+			sourceMatch := false
+			for _, source := range sources {
+				if strings.EqualFold(string(notification.Source), source) {
+					sourceMatch = true
+					break
+				}
+			}
+			if !sourceMatch {
+				continue
+			}
+		}
+
+		// Filter by severities if specified
+		if len(severities) > 0 {
+			severityMatch := false
+			for _, severity := range severities {
+				if strings.EqualFold(string(notification.Severity), severity) {
+					severityMatch = true
+					break
+				}
+			}
+			if !severityMatch {
+				continue
+			}
+		}
+
+		filtered = append(filtered, notification)
+
+		// Stop when we have enough results
+		if len(filtered) >= count {
+			break
+		}
+	}
+
+	return filtered, nil
+}
+
+// Close closes the storage adapter and underlying database connection
+func (a *Adapter) Close() error {
+	if a.db != nil {
+		return a.db.Close()
+	}
+	return nil
+}

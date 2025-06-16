@@ -48,7 +48,7 @@
 
 ## Observations
 
-The current implementation uses TermUI instead of BubbleTea/Lipgloss as specified in the PRD. Based on the latest developments:
+The current implementation uses TermUI Based on the latest developments:
 
 1. **Working Components**:
    - System metrics display (CPU/Memory gauges, CPU history, Disk usage)
