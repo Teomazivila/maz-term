@@ -162,8 +162,8 @@ func LoadConfig(configPath string) (*Config, error) {
 		Result:           &config,
 		WeaklyTypedInput: true,
 		DecodeHook: mapstructure.ComposeDecodeHookFunc(
-			mapstructure.StringToTimeDurationHookFunc(),
 			StringToCustomDurationHookFunc(),
+			mapstructure.StringToTimeDurationHookFunc(),
 		),
 	}
 

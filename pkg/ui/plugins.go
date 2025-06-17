@@ -91,14 +91,38 @@ func (a *App) loadPlugins() {
 
 // updatePluginsTabData updates the data for the Plugins tab
 func (a *App) updatePluginsTabData() {
+	// Get the plugins tab
+	tab := a.getTabByName("Plugins")
+	if tab == nil {
+		return
+	}
+
+	// If no widgets for this tab yet, create them
+	if len(tab.Widgets) == 0 {
+		// Create plugin list
+		pluginList := widgets.NewList()
+		pluginList.Title = "Plugins"
+		pluginList.WrapText = false
+		pluginList.BorderStyle.Fg = ui.ColorCyan
+		pluginList.SelectedRowStyle = ui.NewStyle(ui.ColorBlack, ui.ColorCyan)
+
+		// Create plugin details panel
+		pluginDetails := widgets.NewParagraph()
+		pluginDetails.Title = "Plugin Details"
+		pluginDetails.WrapText = true
+		pluginDetails.BorderStyle.Fg = ui.ColorCyan
+
+		// Add widgets to tab
+		tab.Widgets = []ui.Drawable{pluginList, pluginDetails}
+		tab.Lists = []*widgets.List{pluginList}
+		tab.Panels = []*widgets.Paragraph{pluginDetails}
+	}
+
 	// Get all plugins
 	plugins := a.PluginManager.GetPlugins()
 
-	// Get the plugins tab
-	tab := a.Tabs[a.ActiveTabIndex]
-
 	// Update the plugins list
-	list := tab.Widgets[0].(*widgets.List)
+	list := tab.Lists[0]
 	rows := make([]string, len(plugins))
 	for i, plugin := range plugins {
 		rows[i] = fmt.Sprintf("%s (v%s) - %s",
@@ -114,7 +138,7 @@ func (a *App) updatePluginsTabData() {
 	list.Rows = rows
 
 	// Update the plugin details if there are plugins
-	details := tab.Widgets[1].(*widgets.Paragraph)
+	details := tab.Panels[0]
 	if len(plugins) > 0 && list.SelectedRow < len(plugins) {
 		selectedPlugin := plugins[list.SelectedRow]
 

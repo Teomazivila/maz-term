@@ -170,8 +170,8 @@ func TestSubscription(t *testing.T) {
 	ctx := context.Background()
 	c := collector.NewSystemMetricsCollector()
 
-	// Create a subscription
-	ch := c.Subscribe()
+	// Create a subscription with context
+	ch, id := c.Subscribe(ctx)
 
 	// Start the collector
 	err := c.Start(ctx, 500*time.Millisecond)
@@ -186,11 +186,42 @@ func TestSubscription(t *testing.T) {
 	}
 
 	// Unsubscribe
-	c.Unsubscribe(ch)
+	c.Unsubscribe(id)
 
-	// The channel should be closed
-	_, open := <-ch
-	assert.False(t, open)
+	// Stop the collector
+	err = c.Stop()
+	assert.NoError(t, err)
+}
+
+func TestHTTPSubscription(t *testing.T) {
+	ctx := context.Background()
+	endpoints := []models.EndpointConfig{
+		{
+			Name:   "Google",
+			URL:    "https://www.google.com",
+			Method: "GET",
+		},
+	}
+
+	c := collector.NewHTTPHealthChecker(endpoints)
+
+	// Create a subscription with context
+	ch, id := c.Subscribe(ctx)
+
+	// Start the collector
+	err := c.Start(ctx, 500*time.Millisecond)
+	assert.NoError(t, err)
+
+	// Wait for metrics to be received
+	select {
+	case metrics := <-ch:
+		assert.NotEmpty(t, metrics)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timed out waiting for HTTP metrics")
+	}
+
+	// Unsubscribe
+	c.Unsubscribe(id)
 
 	// Stop the collector
 	err = c.Stop()

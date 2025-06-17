@@ -106,14 +106,54 @@ type Tab struct {
 
 // createUI creates the terminal UI elements
 func (a *App) createUI() {
+	// Create main grid
+	a.Grid = ui.NewGrid()
+
 	// Create status bar
 	a.StatusBar = widgets.NewParagraph()
 	a.StatusBar.Title = "Status"
 	a.StatusBar.Text = "Initializing..."
+	a.StatusBar.BorderStyle.Fg = ui.ColorCyan
 
 	// Create tab bar
 	a.TabBar = widgets.NewTabPane(a.getTabNames()...)
 	a.TabBar.ActiveTabIndex = a.ActiveTabIndex
+	a.TabBar.Border = true
+
+	// Create help panel (initially hidden)
+	a.HelpPanel = widgets.NewParagraph()
+	a.HelpPanel.Title = "Help"
+	a.HelpPanel.Text = `
+Navigation:
+  Tab/Shift-Tab: Switch between tabs
+  ←/→: Navigate tabs
+  ↑/↓: Navigate within tab
+  Enter: Select/activate item
+  
+Actions:
+  h: Toggle this help
+  q: Quit application
+  r: Refresh data
+  e: Export data
+  
+History Tab:
+  1-7: Select time range (1h, 6h, 24h, 3d, 7d, 30d, 90d)
+  a: Add event annotation
+  z: Toggle zoom mode
+  c: Toggle comparison mode
+  
+Notifications:
+  m: Mark as read
+  d: Dismiss notification
+  f: Filter notifications
+  x: Clear all notifications
+`
+	a.HelpPanel.WrapText = true
+	a.HelpPanel.BorderStyle.Fg = ui.ColorYellow
+
+	// Initialize history range
+	a.HistoryRange = 24 * time.Hour // Default to 24 hours
+	a.HistoryRangeIdx = 2           // Index for 24h in the range options
 }
 
 // SetCloudCollector sets the cloud metrics collector

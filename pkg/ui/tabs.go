@@ -55,13 +55,10 @@ func (a *App) layoutSystemTab(tab *Tab, rect image.Rectangle) {
 		for _, tabCfg := range a.Config.Layout {
 			if tabCfg.Name == "System" {
 				// If a custom layout is defined, use it
-				if len(tabCfg.Layout) > 0 {
-					// Parse layout from config
-					gridRows := make([][]int, len(tabCfg.Layout))
-					for i, row := range tabCfg.Layout {
-						gridRows[i] = row
-					}
-					grid.Set(gridRows)
+				if len(tabCfg.Panels) > 0 {
+					// Parse layout from config - simplified for now
+					// This would be expanded to actually parse panel configurations
+					// For now, just use default layout
 					break
 				}
 			}
