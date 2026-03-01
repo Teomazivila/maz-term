@@ -1,89 +1,186 @@
 package ui
 
 import (
-	tea "github.com/charmbracelet/bubbletea"
+	"time"
+
+	"github.com/Teomazivila/maz-term/pkg/collector"
+	"github.com/Teomazivila/maz-term/pkg/config"
+	"github.com/Teomazivila/maz-term/pkg/models"
+	"github.com/Teomazivila/maz-term/pkg/plugins"
+	ui "github.com/gizak/termui/v3"
+	"github.com/gizak/termui/v3/widgets"
 )
 
-// App is the main application model
+// StorageInterface defines the interface for data storage operations
+type StorageInterface interface {
+	// System metrics history
+	GetCPUUsageHistory(period time.Duration, points int) ([]models.TimeSeriesPoint, error)
+	GetMemoryUsageHistory(period time.Duration, points int) ([]models.TimeSeriesPoint, error)
+	GetDiskUsageHistory(mountPoint string, period time.Duration, points int) ([]models.TimeSeriesPoint, error)
+
+	// HTTP metrics history
+	GetHTTPResponseTimeHistory(endpoint string, period time.Duration, points int) ([]models.TimeSeriesPoint, error)
+	GetHTTPAvailabilityHistory(endpoint string, period time.Duration, points int) ([]models.TimeSeriesPoint, error)
+	GetAllEndpoints() ([]string, error)
+
+	// Git metrics history
+	GetCommitCountHistory(repoName string, period time.Duration, points int) ([]models.TimeSeriesPoint, error)
+	GetModifiedFilesHistory(repoName string, period time.Duration, points int) ([]models.TimeSeriesPoint, error)
+	GetPendingCommitsHistory(repoName string, period time.Duration, points int) ([]models.TimeSeriesPoint, error)
+
+	// Event annotations
+	GetEventAnnotations(period time.Duration) ([]models.EventAnnotation, error)
+	AddEventAnnotation(event models.EventAnnotation) error
+	DeleteEventAnnotation(id string) error
+
+	// Notifications
+	AddNotification(notification models.Notification) error
+	GetNotifications(count int, includeRead bool) ([]models.Notification, error)
+	GetFilteredNotifications(count int, includeRead bool, sources []string, severities []string) ([]models.Notification, error)
+	MarkAsRead(id string) error
+	DismissNotification(id string) error
+	ClearAllNotifications() error
+	GetUnreadNotificationCount() (int, error)
+}
+
+// App represents the main terminal UI application
 type App struct {
-	config    interface{} // Will be replaced with actual config type
-	tabs      []Tab
-	activeTab int
-	width     int
-	height    int
+	Config                 *config.Config
+	ActiveTabIndex         int
+	Tabs                   []*Tab
+	StatusBar              *widgets.Paragraph
+	Grid                   *ui.Grid
+	TabBar                 *widgets.TabPane
+	Running                bool
+	SystemCollector        *collector.SystemMetricsCollector
+	HTTPCollector          *collector.HTTPHealthChecker
+	GitCollector           *collector.GitStatusCollector
+	CloudCollector         interface{ GetLatestMetrics() interface{} }
+	KubernetesCollector    interface{ GetLatestMetrics() interface{} }
+	CICDCollector          interface{ GetLatestMetrics() interface{} }
+	TermWidth              int
+	TermHeight             int
+	ShowHelp               bool
+	HelpPanel              *widgets.Paragraph
+	Storage                StorageInterface
+	ExportInProgress       bool
+	HistoryRange           time.Duration            // Selected time range for history tab
+	HistoryRangeIdx        int                      // Index of currently selected range option
+	ShowAnnotations        bool                     // Whether to show event annotations
+	Annotations            []models.EventAnnotation // Cached event annotations
+	AddingAnnotation       bool                     // Whether we're currently adding a new annotation
+	AnnotationForm         *widgets.Paragraph       // Form for adding new annotations
+	ZoomMode               bool                     // Whether we're in zoom mode
+	ZoomActiveChart        int                      // Index of chart being zoomed
+	ZoomStartPercent       float64                  // Start position of zoom region (percentage)
+	ZoomEndPercent         float64                  // End position of zoom region (percentage)
+	ZoomStartTime          time.Time                // Start time for zoomed view
+	ZoomEndTime            time.Time                // End time for zoomed view
+	ComparisonMode         bool                     // Whether comparison mode is active
+	PrimaryMetric          string                   // Primary metric being compared
+	ComparisonMetrics      []string                 // List of metrics being compared
+	Notifications          []models.Notification    // Cached notifications
+	SelectedNotification   int                      // Index of the selected notification
+	NotificationDetailMode bool                     // Whether notification detail mode is active
+	NotificationSources    []string                 // List of sources to filter notifications by
+	NotificationSeverities []string                 // List of severities to filter notifications by
+	NotificationFilterMode bool                     // Whether filter mode is active
+	PluginManager          *plugins.PluginManager   // Plugin manager
+	PluginMetrics          []models.Metric          // Metrics from plugins
 }
 
-// Tab represents a tab in the UI
-type Tab interface {
-	Title() string
-	Update(msg tea.Msg) (Tab, tea.Cmd)
-	View() string
-	SetSize(width, height int)
+// Tab represents a terminal UI tab
+type Tab struct {
+	Name       string
+	Grid       *ui.Grid
+	Widgets    []ui.Drawable
+	Panels     []*widgets.Paragraph
+	Gauges     []*widgets.Gauge
+	Tables     []*widgets.Table
+	Sparklines []*widgets.SparklineGroup
+	BarCharts  []*widgets.BarChart
+	Plots      []*widgets.Plot
+	Lists      []*widgets.List
+	HasUnread  bool // Whether this tab has unread notifications
 }
 
-// NewApp creates a new application model
-func NewApp() *App {
-	return &App{
-		tabs:      []Tab{},
-		activeTab: 0,
+// createUI creates the terminal UI elements
+func (a *App) createUI() {
+	// Create main grid
+	a.Grid = ui.NewGrid()
+
+	// Create status bar
+	a.StatusBar = widgets.NewParagraph()
+	a.StatusBar.Title = "Status"
+	a.StatusBar.Text = "Initializing..."
+	a.StatusBar.BorderStyle.Fg = ui.ColorCyan
+
+	// Create tab bar
+	a.TabBar = widgets.NewTabPane(a.getTabNames()...)
+	a.TabBar.ActiveTabIndex = a.ActiveTabIndex
+	a.TabBar.Border = true
+
+	// Create help panel (initially hidden)
+	a.HelpPanel = widgets.NewParagraph()
+	a.HelpPanel.Title = "Help"
+	a.HelpPanel.Text = `
+Navigation:
+  Tab/Shift-Tab: Switch between tabs
+  ←/→: Navigate tabs
+  ↑/↓: Navigate within tab
+  Enter: Select/activate item
+  
+Actions:
+  h: Toggle this help
+  q: Quit application
+  r: Refresh data
+  e: Export data
+  
+History Tab:
+  1-7: Select time range (1h, 6h, 24h, 3d, 7d, 30d, 90d)
+  a: Add event annotation
+  z: Toggle zoom mode
+  c: Toggle comparison mode
+  
+Notifications:
+  m: Mark as read
+  d: Dismiss notification
+  f: Filter notifications
+  x: Clear all notifications
+`
+	a.HelpPanel.WrapText = true
+	a.HelpPanel.BorderStyle.Fg = ui.ColorYellow
+
+	// Initialize history range
+	a.HistoryRange = 24 * time.Hour // Default to 24 hours
+	a.HistoryRangeIdx = 2           // Index for 24h in the range options
+}
+
+// SetCloudCollector sets the cloud metrics collector
+func (a *App) SetCloudCollector(collector interface{ GetLatestMetrics() interface{} }) {
+	a.CloudCollector = collector
+}
+
+// SetKubernetesCollector sets the Kubernetes metrics collector
+func (a *App) SetKubernetesCollector(collector interface{ GetLatestMetrics() interface{} }) {
+	a.KubernetesCollector = collector
+}
+
+// SetCICDCollector sets the CI/CD metrics collector
+func (a *App) SetCICDCollector(collector interface{ GetLatestMetrics() interface{} }) {
+	a.CICDCollector = collector
+}
+
+// SetStorage sets the storage interface
+func (a *App) SetStorage(storage StorageInterface) {
+	a.Storage = storage
+}
+
+// getTabNames returns the names of all tabs
+func (a *App) getTabNames() []string {
+	names := make([]string, len(a.Tabs))
+	for i, tab := range a.Tabs {
+		names[i] = tab.Name
 	}
-}
-
-// Init initializes the application
-func (a *App) Init() tea.Cmd {
-	// This will be implemented in Phase 2
-	return nil
-}
-
-// Update handles application updates
-func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "q":
-			return a, tea.Quit
-		}
-	case tea.WindowSizeMsg:
-		a.width = msg.Width
-		a.height = msg.Height
-		// Resize all tabs
-		for i := range a.tabs {
-			if tab, ok := a.tabs[i].(Tab); ok {
-				tab.SetSize(msg.Width, msg.Height)
-			}
-		}
-	}
-
-	// If we have active tabs, pass the message to the active tab
-	if len(a.tabs) > 0 {
-		var cmd tea.Cmd
-		a.tabs[a.activeTab], cmd = a.tabs[a.activeTab].Update(msg)
-		return a, cmd
-	}
-
-	return a, nil
-}
-
-// View renders the application UI
-func (a *App) View() string {
-	// If no tabs, render a welcome screen
-	if len(a.tabs) == 0 {
-		return "Welcome to DevOps Terminal Dashboard!\nNo tabs are currently loaded."
-	}
-
-	// Render the active tab
-	return a.tabs[a.activeTab].View()
-}
-
-// AddTab adds a new tab to the application
-func (a *App) AddTab(tab Tab) {
-	tab.SetSize(a.width, a.height)
-	a.tabs = append(a.tabs, tab)
-}
-
-// SetActiveTab sets the active tab
-func (a *App) SetActiveTab(index int) {
-	if index >= 0 && index < len(a.tabs) {
-		a.activeTab = index
-	}
+	return names
 }

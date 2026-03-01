@@ -23,9 +23,38 @@ func TestCreateDefaultConfig(t *testing.T) {
 	assert.Equal(t, "default", defaultConfig.General.Theme)
 	assert.Equal(t, 7*24*time.Hour, defaultConfig.General.HistoryRetention)
 
-	// Assert that the default layout has one tab
-	assert.Equal(t, 1, len(defaultConfig.Layout))
+	// Assert that the default layout has the expected number of tabs
+	assert.Equal(t, 4, len(defaultConfig.Layout))
 
 	// Assert that the local metrics are enabled by default
 	assert.True(t, defaultConfig.Metrics.Local.Enabled)
+}
+
+func TestConfigWithLayout(t *testing.T) {
+	// Create a config with layout
+	cfg := config.Config{
+		Layout: []config.LayoutTab{
+			{
+				Name:   "System",
+				Panels: []string{"cpu", "memory", "disk"},
+			},
+			{
+				Name:   "Git",
+				Panels: []string{"git-status"},
+			},
+		},
+	}
+
+	// Validate that layout has tabs with names and panels
+	assert.Equal(t, 2, len(cfg.Layout))
+	assert.Equal(t, "System", cfg.Layout[0].Name)
+	assert.Equal(t, "Git", cfg.Layout[1].Name)
+	assert.Equal(t, 3, len(cfg.Layout[0].Panels))
+	assert.Equal(t, 1, len(cfg.Layout[1].Panels))
+
+	// Test that empty layout is also valid
+	emptyCfg := config.Config{
+		Layout: []config.LayoutTab{},
+	}
+	assert.Equal(t, 0, len(emptyCfg.Layout))
 }

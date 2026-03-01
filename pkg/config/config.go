@@ -3,16 +3,36 @@ package config
 import (
 	"fmt"
 	"os"
+	"reflect"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/Teomazivila/maz-term/pkg/models"
+	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
 )
 
+// GitConfig represents git repository configuration
+type GitConfig struct {
+	Repositories []GitRepoConfig `mapstructure:"repositories"`
+}
+
+// GitRepoConfig represents a git repository configuration
+type GitRepoConfig struct {
+	Path   string `mapstructure:"path"`
+	Remote string `mapstructure:"remote"`
+	Branch string `mapstructure:"branch"`
+}
+
 // Config represents the application configuration
 type Config struct {
-	General GeneralConfig `mapstructure:"general"`
-	Layout  []LayoutTab   `mapstructure:"layout"`
-	Metrics MetricsConfig `mapstructure:"metrics"`
+	General   GeneralConfig           `mapstructure:"general"`
+	Layout    []LayoutTab             `mapstructure:"layout"`
+	Metrics   MetricsConfig           `mapstructure:"metrics"`
+	Endpoints []models.EndpointConfig `mapstructure:"endpoints"`
+	Git       GitConfig               `mapstructure:"git"`
+	Plugins   PluginsConfig           `mapstructure:"plugins"`
 }
 
 // GeneralConfig contains general application settings
@@ -24,13 +44,7 @@ type GeneralConfig struct {
 
 // LayoutTab represents a tab in the dashboard layout
 type LayoutTab struct {
-	Name string      `mapstructure:"name"`
-	Rows []LayoutRow `mapstructure:"rows"`
-}
-
-// LayoutRow represents a row in the dashboard layout
-type LayoutRow struct {
-	Size   int      `mapstructure:"size"`
+	Name   string   `mapstructure:"name"`
 	Panels []string `mapstructure:"panels"`
 }
 
@@ -73,6 +87,40 @@ type GitRepositoryConfig struct {
 	Branch string `mapstructure:"branch"`
 }
 
+// PluginsConfig contains configuration for plugins
+type PluginsConfig struct {
+	Directory string                 `mapstructure:"directory"`
+	Enabled   []string               `mapstructure:"enabled"`
+	Settings  map[string]interface{} `mapstructure:"settings"`
+}
+
+// AWSConfig contains configuration for AWS integration
+type AWSConfig struct {
+	Region            string   `mapstructure:"region"`
+	AccessKeyID       string   `mapstructure:"access_key_id"`
+	SecretAccessKey   string   `mapstructure:"secret_access_key"`
+	Profile           string   `mapstructure:"profile"`
+	AdditionalRegions []string `mapstructure:"additional_regions"`
+	Resources         []string `mapstructure:"resources"`
+}
+
+// GitHubConfig contains configuration for GitHub integration
+type GitHubConfig struct {
+	Token        string   `mapstructure:"token"`
+	Organization string   `mapstructure:"organization"`
+	Owner        string   `mapstructure:"owner"`
+	Repositories []string `mapstructure:"repositories"`
+}
+
+// KubernetesConfig contains configuration for Kubernetes integration
+type KubernetesConfig struct {
+	ConfigPath string   `mapstructure:"config_path"`
+	Context    string   `mapstructure:"context"`
+	Namespace  string   `mapstructure:"namespace"`
+	Namespaces []string `mapstructure:"namespaces"`
+	Resources  []string `mapstructure:"resources"`
+}
+
 // LoadConfig loads the application configuration from the specified file
 func LoadConfig(configPath string) (*Config, error) {
 	v := viper.New()
@@ -108,11 +156,65 @@ func LoadConfig(configPath string) (*Config, error) {
 	}
 
 	var config Config
-	if err := v.Unmarshal(&config); err != nil {
+
+	// Setup decoder with custom options for duration parsing
+	decoderConfig := &mapstructure.DecoderConfig{
+		Result:           &config,
+		WeaklyTypedInput: true,
+		DecodeHook: mapstructure.ComposeDecodeHookFunc(
+			StringToCustomDurationHookFunc(),
+			mapstructure.StringToTimeDurationHookFunc(),
+		),
+	}
+
+	decoder, err := mapstructure.NewDecoder(decoderConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create decoder: %w", err)
+	}
+
+	if err := decoder.Decode(v.AllSettings()); err != nil {
 		return nil, fmt.Errorf("unable to decode config into struct: %w", err)
 	}
 
 	return &config, nil
+}
+
+// StringToCustomDurationHookFunc returns a DecodeHookFunc that converts strings
+// to time.Duration, supporting extended formats like "7d" or "1w"
+func StringToCustomDurationHookFunc() mapstructure.DecodeHookFunc {
+	return func(f reflect.Type, t reflect.Type, data interface{}) (interface{}, error) {
+		// Check if the input type is string and the target type is time.Duration
+		if f.Kind() != reflect.String || t != reflect.TypeOf(time.Duration(0)) {
+			return data, nil
+		}
+
+		// Parse the string into a duration
+		durationStr := data.(string)
+
+		// First try standard duration parsing (like "5s", "10m", etc.)
+		if duration, err := time.ParseDuration(durationStr); err == nil {
+			return duration, nil
+		}
+
+		// Handle extended formats: d (days) and w (weeks)
+		if strings.HasSuffix(durationStr, "d") {
+			value, err := strconv.Atoi(durationStr[:len(durationStr)-1])
+			if err != nil {
+				return nil, fmt.Errorf("invalid duration format: %s", durationStr)
+			}
+			return time.Duration(value) * 24 * time.Hour, nil
+		}
+
+		if strings.HasSuffix(durationStr, "w") {
+			value, err := strconv.Atoi(durationStr[:len(durationStr)-1])
+			if err != nil {
+				return nil, fmt.Errorf("invalid duration format: %s", durationStr)
+			}
+			return time.Duration(value) * 7 * 24 * time.Hour, nil
+		}
+
+		return nil, fmt.Errorf("invalid duration format: %s", durationStr)
+	}
 }
 
 // createDefaultConfig creates a default configuration
@@ -125,17 +227,20 @@ func createDefaultConfig() (*Config, error) {
 		},
 		Layout: []LayoutTab{
 			{
-				Name: "System Overview",
-				Rows: []LayoutRow{
-					{
-						Size:   1,
-						Panels: []string{"cpu", "memory", "disk", "network"},
-					},
-					{
-						Size:   2,
-						Panels: []string{"processes"},
-					},
-				},
+				Name:   "System Overview",
+				Panels: []string{"cpu", "memory", "disk", "network"},
+			},
+			{
+				Name:   "System",
+				Panels: []string{"system"},
+			},
+			{
+				Name:   "HTTP",
+				Panels: []string{"http"},
+			},
+			{
+				Name:   "Git",
+				Panels: []string{"git"},
 			},
 		},
 		Metrics: MetricsConfig{
@@ -174,4 +279,49 @@ func SaveConfig(config *Config, filePath string) error {
 	}
 
 	return nil
+}
+
+// DefaultConfig returns the default configuration
+func DefaultConfig() *Config {
+	return &Config{
+		General: GeneralConfig{
+			RefreshInterval:  5 * time.Second,
+			Theme:            "default",
+			HistoryRetention: 7 * 24 * time.Hour, // 7 days
+		},
+		Layout: []LayoutTab{
+			{
+				Name:   "System",
+				Panels: []string{"system"},
+			},
+			{
+				Name:   "HTTP",
+				Panels: []string{"http"},
+			},
+			{
+				Name:   "Git",
+				Panels: []string{"git"},
+			},
+		},
+		Endpoints: []models.EndpointConfig{
+			{Name: "Google", URL: "https://www.google.com", Method: "GET"},
+			{Name: "GitHub", URL: "https://github.com", Method: "GET"},
+			{Name: "Celesta", URL: "https://celesta.io", Method: "GET"},
+			{Name: "Teomaz", URL: "https://teomazivila.com", Method: "GET"},
+		},
+		Git: GitConfig{
+			Repositories: []GitRepoConfig{
+				{
+					Path:   ".",
+					Remote: "origin",
+					Branch: "main",
+				},
+			},
+		},
+		Plugins: PluginsConfig{
+			Directory: "plugins",
+			Enabled:   []string{},
+			Settings:  map[string]interface{}{},
+		},
+	}
 }
