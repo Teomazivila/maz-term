@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/Teomazivila/maz-term/pkg/models"
-	_ "github.com/mattn/go-sqlite3" // SQLite driver
+	_ "modernc.org/sqlite" // pure-Go SQLite driver, so the binary needs no cgo
 )
 
 // ErrNotFound is an alias for models.ErrNotFound, re-exported so storage
@@ -98,10 +98,17 @@ func New(config *Config) (*Database, error) {
 		return nil, fmt.Errorf("failed to create database directory: %w", err)
 	}
 
-	// _busy_timeout keeps concurrent collector writes from failing outright
-	// with SQLITE_BUSY; WAL alone still serialises writers.
-	dsn := fmt.Sprintf("%s?_journal_mode=WAL&_synchronous=NORMAL&_cache_size=10000&_foreign_keys=ON&_busy_timeout=5000", config.DataPath)
-	db, err := sql.Open("sqlite3", dsn)
+	// busy_timeout keeps concurrent collector writes from failing outright with
+	// SQLITE_BUSY; WAL alone still serialises writers.
+	//
+	// The driver is modernc.org/sqlite rather than mattn/go-sqlite3 because the
+	// latter requires cgo, and every cross-compilation target in the Makefile
+	// sets CGO_ENABLED=0. Those builds linked and then failed at runtime with
+	// `unknown driver "sqlite3"`, so no released binary could store anything.
+	dsn := fmt.Sprintf(
+		"file:%s?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)&_pragma=cache_size(-10000)",
+		config.DataPath)
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
