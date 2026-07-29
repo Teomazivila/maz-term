@@ -1,3 +1,9 @@
+//go:build plugin
+
+// Command sample is a reference maz-term plugin. It is built with
+// -buildmode=plugin (see the sample-plugin Makefile target) and is excluded
+// from ordinary builds by the "plugin" tag, because a main package without a
+// main function cannot be linked as an executable.
 package main
 
 import (

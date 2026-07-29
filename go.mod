@@ -1,6 +1,6 @@
 module github.com/Teomazivila/maz-term
 
-go 1.24.1
+go 1.26.5
 
 require (
 	github.com/charmbracelet/lipgloss v1.1.0
