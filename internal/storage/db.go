@@ -3,9 +3,10 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"sync"
@@ -14,6 +15,14 @@ import (
 	"github.com/Teomazivila/maz-term/pkg/models"
 	_ "github.com/mattn/go-sqlite3" // SQLite driver
 )
+
+// ErrNotFound is an alias for models.ErrNotFound, re-exported so storage
+// callers can reference it without importing models directly.
+var ErrNotFound = models.ErrNotFound
+
+// queryTimeout bounds every individual statement so a locked database cannot
+// stall the dashboard's render loop indefinitely.
+const queryTimeout = 10 * time.Second
 
 // Database represents a SQLite database connection with proper resource management
 type Database struct {
@@ -53,20 +62,45 @@ func DefaultConfig() *Config {
 	}
 }
 
-// New creates a new database connection with proper resource management
+// New creates a new database connection with proper resource management.
+//
+// DataPath is required. An empty path would make SQLite open an anonymous
+// temporary database that is destroyed on close, silently discarding all
+// recorded history, so it is rejected rather than defaulted.
 func New(config *Config) (*Database, error) {
 	if config == nil {
 		config = DefaultConfig()
 	}
+	if config.DataPath == "" {
+		return nil, errors.New("storage: DataPath is required")
+	}
+
+	defaults := DefaultConfig()
+	if config.RetentionPeriod <= 0 {
+		config.RetentionPeriod = defaults.RetentionPeriod
+	}
+	if config.MaxOpenConns <= 0 {
+		config.MaxOpenConns = defaults.MaxOpenConns
+	}
+	if config.MaxIdleConns <= 0 {
+		config.MaxIdleConns = defaults.MaxIdleConns
+	}
+	if config.ConnMaxLifetime <= 0 {
+		config.ConnMaxLifetime = defaults.ConnMaxLifetime
+	}
+	if config.Logger == nil {
+		config.Logger = slog.Default()
+	}
 
 	// Ensure the directory exists
 	dbDir := filepath.Dir(config.DataPath)
-	if err := os.MkdirAll(dbDir, 0755); err != nil {
+	if err := os.MkdirAll(dbDir, 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create database directory: %w", err)
 	}
 
-	// Connect to the database with proper connection string
-	dsn := fmt.Sprintf("%s?_journal_mode=WAL&_synchronous=NORMAL&_cache_size=10000&_foreign_keys=ON", config.DataPath)
+	// _busy_timeout keeps concurrent collector writes from failing outright
+	// with SQLITE_BUSY; WAL alone still serialises writers.
+	dsn := fmt.Sprintf("%s?_journal_mode=WAL&_synchronous=NORMAL&_cache_size=10000&_foreign_keys=ON&_busy_timeout=5000", config.DataPath)
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
@@ -197,12 +231,35 @@ func (d *Database) initSchema(ctx context.Context) error {
 		return fmt.Errorf("failed to create git_metrics table: %w", err)
 	}
 
-	// Create indexes for fast queries
+	// Create the annotations table
+	_, err = d.db.ExecContext(ctx, `
+	CREATE TABLE IF NOT EXISTS annotations (
+		id TEXT PRIMARY KEY,
+		timestamp INTEGER NOT NULL,
+		title TEXT NOT NULL,
+		description TEXT NOT NULL DEFAULT '',
+		type TEXT NOT NULL DEFAULT 'other',
+		severity TEXT NOT NULL DEFAULT 'info',
+		source TEXT NOT NULL DEFAULT '',
+		tags TEXT NOT NULL DEFAULT '[]'
+	)`)
+	if err != nil {
+		return fmt.Errorf("failed to create annotations table: %w", err)
+	}
+
+	// Create indexes for fast queries. The composite indexes match the
+	// (identifier, time-window) shape of the history queries in
+	// http_metrics.go, git_metrics.go and system_metrics.go, which would
+	// otherwise scan the whole table.
 	indexes := []string{
 		"CREATE INDEX IF NOT EXISTS idx_system_metrics_timestamp ON system_metrics(timestamp)",
 		"CREATE INDEX IF NOT EXISTS idx_disk_metrics_timestamp ON disk_metrics(timestamp)",
+		"CREATE INDEX IF NOT EXISTS idx_disk_metrics_mount_timestamp ON disk_metrics(mount_point, timestamp)",
 		"CREATE INDEX IF NOT EXISTS idx_http_metrics_timestamp ON http_metrics(timestamp)",
+		"CREATE INDEX IF NOT EXISTS idx_http_metrics_endpoint_timestamp ON http_metrics(endpoint_name, timestamp)",
 		"CREATE INDEX IF NOT EXISTS idx_git_metrics_timestamp ON git_metrics(timestamp)",
+		"CREATE INDEX IF NOT EXISTS idx_git_metrics_repo_timestamp ON git_metrics(repo_name, timestamp)",
+		"CREATE INDEX IF NOT EXISTS idx_annotations_timestamp ON annotations(timestamp)",
 	}
 
 	for _, indexSQL := range indexes {
@@ -261,8 +318,9 @@ func (d *Database) cleanupOldData() error {
 		}
 	}()
 
-	// Delete old data from all tables
-	tables := []string{"system_metrics", "disk_metrics", "http_metrics", "git_metrics"}
+	// Delete old data from all tables. Annotations are included so they do not
+	// outlive the metrics they annotate and grow without bound.
+	tables := []string{"system_metrics", "disk_metrics", "http_metrics", "git_metrics", "annotations"}
 	totalDeleted := 0
 
 	for _, table := range tables {
@@ -292,247 +350,127 @@ func (d *Database) cleanupOldData() error {
 	return nil
 }
 
-// GetEventAnnotations fetches event annotations for a specific period
-func (db *Database) GetEventAnnotations(period time.Duration) ([]models.EventAnnotation, error) {
-	// In a real implementation, this would query the database
-	// For now, we'll return a placeholder list of annotations
-
-	// Example annotations
-	startTime := time.Now().Add(-period)
-	endTime := time.Now()
-
-	// Demo annotations
-	annotations := []models.EventAnnotation{
-		{
-			ID:          "event_001",
-			Timestamp:   startTime.Add(period / 4),
-			Title:       "System Restart",
-			Description: "Scheduled restart for system maintenance",
-			Type:        models.EventTypeRestart,
-			Severity:    models.SeverityInfo,
-			Source:      "system",
-			Tags:        []string{"cpu", "memory", "system"},
-		},
-		{
-			ID:          "event_002",
-			Timestamp:   startTime.Add(period / 2),
-			Title:       "Application Deployment",
-			Description: "Deployed version 1.2.3 of the application",
-			Type:        models.EventTypeDeployment,
-			Severity:    models.SeverityInfo,
-			Source:      "ci/cd",
-			Tags:        []string{"http", "deployment"},
-		},
-		{
-			ID:          "event_003",
-			Timestamp:   startTime.Add(period * 3 / 4),
-			Title:       "High CPU Alert",
-			Description: "CPU usage exceeded 90% for 5 minutes",
-			Type:        models.EventTypeAlert,
-			Severity:    models.SeverityWarning,
-			Source:      "monitor",
-			Tags:        []string{"cpu", "system", "alert"},
-		},
+// GetEventAnnotations returns the annotations recorded within the given period,
+// most recent first.
+func (d *Database) GetEventAnnotations(period time.Duration) ([]models.EventAnnotation, error) {
+	if period <= 0 {
+		return nil, fmt.Errorf("storage: period must be positive, got %s", period)
 	}
 
-	// Filter annotations based on time period
-	filteredAnnotations := []models.EventAnnotation{}
-	for _, ann := range annotations {
-		if (ann.Timestamp.After(startTime) || ann.Timestamp.Equal(startTime)) &&
-			(ann.Timestamp.Before(endTime) || ann.Timestamp.Equal(endTime)) {
-			filteredAnnotations = append(filteredAnnotations, ann)
-		}
-	}
+	ctx, cancel := context.WithTimeout(d.ctx, queryTimeout)
+	defer cancel()
 
-	return filteredAnnotations, nil
-}
+	cutoff := time.Now().Add(-period).Unix()
 
-// SeedDemoDataIfEmpty checks if the database is empty and seeds it with demo data
-func (d *Database) SeedDemoDataIfEmpty() error {
-	// Check if system_metrics table is empty
-	var count int
-	err := d.db.QueryRow("SELECT COUNT(*) FROM system_metrics").Scan(&count)
+	rows, err := d.db.QueryContext(ctx, `
+	SELECT id, timestamp, title, description, type, severity, source, tags
+	FROM annotations
+	WHERE timestamp >= ?
+	ORDER BY timestamp DESC`, cutoff)
 	if err != nil {
-		return fmt.Errorf("failed to check if system_metrics table is empty: %w", err)
+		return nil, fmt.Errorf("querying annotations: %w", err)
+	}
+	defer rows.Close()
+
+	var annotations []models.EventAnnotation
+	for rows.Next() {
+		var (
+			annotation models.EventAnnotation
+			timestamp  int64
+			tagsJSON   string
+		)
+		if err := rows.Scan(
+			&annotation.ID,
+			&timestamp,
+			&annotation.Title,
+			&annotation.Description,
+			&annotation.Type,
+			&annotation.Severity,
+			&annotation.Source,
+			&tagsJSON,
+		); err != nil {
+			return nil, fmt.Errorf("scanning annotation: %w", err)
+		}
+
+		annotation.Timestamp = time.Unix(timestamp, 0)
+		if tagsJSON != "" {
+			if err := json.Unmarshal([]byte(tagsJSON), &annotation.Tags); err != nil {
+				return nil, fmt.Errorf("decoding tags for annotation %s: %w", annotation.ID, err)
+			}
+		}
+
+		annotations = append(annotations, annotation)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating annotations: %w", err)
 	}
 
-	// If not empty, return
-	if count > 0 {
-		return nil
+	return annotations, nil
+}
+
+// AddEventAnnotation stores a new annotation. Callers must supply a stable ID so
+// the annotation can be deleted later.
+func (d *Database) AddEventAnnotation(event models.EventAnnotation) error {
+	if event.ID == "" {
+		return errors.New("storage: annotation ID is required")
+	}
+	if event.Title == "" {
+		return errors.New("storage: annotation title is required")
+	}
+	if event.Timestamp.IsZero() {
+		event.Timestamp = time.Now()
 	}
 
-	fmt.Println("Database is empty. Seeding with demo data...")
-
-	// Begin a transaction
-	tx, err := d.db.Begin()
+	tagsJSON, err := json.Marshal(event.Tags)
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	// Generate demo data for the past 24 hours
-	now := time.Now()
-
-	// Seed system metrics
-	for i := 0; i < 100; i++ {
-		timestamp := now.Add(-time.Duration(i*15) * time.Minute).Unix()
-		cpuUsage := 20.0 + float64(i%30)               // Generate fluctuating CPU usage
-		memoryUsage := 45.0 + float64(i%20)            // Generate fluctuating memory usage
-		memoryTotal := uint64(16 * 1024 * 1024 * 1024) // 16GB
-		memoryUsed := uint64(float64(memoryTotal) * memoryUsage / 100.0)
-
-		_, err = tx.Exec(
-			"INSERT INTO system_metrics (timestamp, cpu_usage, memory_usage, memory_total, memory_used) VALUES (?, ?, ?, ?, ?)",
-			timestamp,
-			cpuUsage,
-			memoryUsage,
-			memoryTotal,
-			memoryUsed,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to insert demo system metrics: %w", err)
-		}
+		return fmt.Errorf("encoding tags for annotation %s: %w", event.ID, err)
 	}
 
-	// Seed disk metrics
-	mountPoints := []string{"/", "/home", "/var"}
-	for i := 0; i < 100; i++ {
-		timestamp := now.Add(-time.Duration(i*15) * time.Minute).Unix()
+	ctx, cancel := context.WithTimeout(d.ctx, queryTimeout)
+	defer cancel()
 
-		for _, mp := range mountPoints {
-			diskUsage := 30.0 + float64(i%25)         // Generate fluctuating disk usage
-			total := uint64(500 * 1024 * 1024 * 1024) // 500GB
-			used := uint64(float64(total) * diskUsage / 100.0)
-
-			_, err = tx.Exec(
-				"INSERT INTO disk_metrics (timestamp, mount_point, total, used, usage_percent) VALUES (?, ?, ?, ?, ?)",
-				timestamp,
-				mp,
-				total,
-				used,
-				diskUsage,
-			)
-			if err != nil {
-				return fmt.Errorf("failed to insert demo disk metrics: %w", err)
-			}
-		}
+	if _, err := d.db.ExecContext(ctx, `
+	INSERT INTO annotations (id, timestamp, title, description, type, severity, source, tags)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		event.ID,
+		event.Timestamp.Unix(),
+		event.Title,
+		event.Description,
+		string(event.Type),
+		string(event.Severity),
+		event.Source,
+		string(tagsJSON),
+	); err != nil {
+		return fmt.Errorf("inserting annotation %s: %w", event.ID, err)
 	}
 
-	// Seed HTTP metrics
-	endpoints := []struct {
-		name string
-		url  string
-	}{
-		{"Google", "https://www.google.com"},
-		{"GitHub", "https://github.com"},
-		{"Example", "https://example.com"},
-	}
-
-	for i := 0; i < 100; i++ {
-		timestamp := now.Add(-time.Duration(i*15) * time.Minute).Unix()
-
-		for _, ep := range endpoints {
-			responseTime := 80 + i%150 // 80-230ms
-			isUp := rand.Intn(20) > 0  // 95% uptime
-			statusCode := 200
-			if !isUp {
-				statusCode = 500
-			}
-
-			_, err = tx.Exec(
-				"INSERT INTO http_metrics (timestamp, endpoint_name, endpoint_url, status_code, response_time, is_up) VALUES (?, ?, ?, ?, ?, ?)",
-				timestamp,
-				ep.name,
-				ep.url,
-				statusCode,
-				responseTime,
-				isUp,
-			)
-			if err != nil {
-				return fmt.Errorf("failed to insert demo HTTP metrics: %w", err)
-			}
-		}
-	}
-
-	// Seed Git metrics
-	for i := 0; i < 100; i++ {
-		timestamp := now.Add(-time.Duration(i*15) * time.Minute).Unix()
-		commitCount := 100 + i/2 // Increasing commit count
-		modifiedFiles := i % 8   // Fluctuating modified files
-		pendingCommits := i % 5  // Fluctuating pending commits
-
-		_, err = tx.Exec(
-			"INSERT INTO git_metrics (timestamp, repo_name, branch, commit_count, modified_files, pending_commits) VALUES (?, ?, ?, ?, ?, ?)",
-			timestamp,
-			"current_repo",
-			"main",
-			commitCount,
-			modifiedFiles,
-			pendingCommits,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to insert demo Git metrics: %w", err)
-		}
-	}
-
-	// Commit the transaction
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	fmt.Println("Successfully seeded database with demo data")
+	d.logger.Debug("annotation stored", "id", event.ID, "title", event.Title)
 	return nil
 }
 
-// AddEventAnnotation adds a new event annotation to storage
-func (db *Database) AddEventAnnotation(event models.EventAnnotation) error {
-	// In a real implementation, this would insert into the database
-	// For now, just return success
-	return nil
-}
+// DeleteEventAnnotation removes the annotation with the given ID. It returns an
+// error wrapping ErrNotFound when no such annotation exists, so the UI reports
+// the truth rather than a successful no-op.
+func (d *Database) DeleteEventAnnotation(id string) error {
+	if id == "" {
+		return errors.New("storage: annotation ID is required")
+	}
 
-// DeleteEventAnnotation removes an event annotation from storage by ID
-func (db *Database) DeleteEventAnnotation(id string) error {
-	// In a real implementation, this would delete from the database
-	// For now, just return success
-	return nil
-}
+	ctx, cancel := context.WithTimeout(d.ctx, queryTimeout)
+	defer cancel()
 
-// StoreCloudMetrics stores cloud provider metrics in the database
-func (db *Database) StoreCloudMetrics(metrics models.CloudProviderMetrics) error {
-	// For the MVP, we'll just log that we received metrics
-	// In a full implementation, this would store data in the database
+	result, err := d.db.ExecContext(ctx, "DELETE FROM annotations WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("deleting annotation %s: %w", id, err)
+	}
 
-	fmt.Printf("Storing cloud metrics for %s with %d instances\n",
-		metrics.ProviderType,
-		len(metrics.InstanceMetrics))
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("counting deleted annotations: %w", err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("annotation %s: %w", id, ErrNotFound)
+	}
 
-	// For now, return success
-	return nil
-}
-
-// StoreKubernetesMetrics stores Kubernetes metrics in the database
-func (db *Database) StoreKubernetesMetrics(metrics models.KubernetesMetrics) error {
-	// For the MVP, we'll just log that we received metrics
-	// In a full implementation, this would store data in the database
-
-	fmt.Printf("Storing Kubernetes metrics for cluster %s with %d pods\n",
-		metrics.ClusterName,
-		len(metrics.Pods))
-
-	// For now, return success
-	return nil
-}
-
-// StoreCICDMetrics stores CI/CD metrics in the database
-func (db *Database) StoreCICDMetrics(metrics models.CICDMetrics) error {
-	// For the MVP, we'll just log that we received metrics
-	// In a full implementation, this would store data in the database
-
-	fmt.Printf("Storing CI/CD metrics for %s provider with %d workflows\n",
-		metrics.ProviderType,
-		len(metrics.Workflows))
-
-	// For now, return success
 	return nil
 }

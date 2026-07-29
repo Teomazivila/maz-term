@@ -1,6 +1,10 @@
 package storage
 
 import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -9,10 +13,18 @@ import (
 	"github.com/google/uuid"
 )
 
-// InitNotificationsSchema initializes the notifications schema
+// notificationColumns is the shared projection for every notification read, so
+// the scan helper and the queries cannot drift apart.
+const notificationColumns = `id, title, message, timestamp, severity, source, read, dismissed, action_url, action_label, tags`
+
+// InitNotificationsSchema initializes the notifications schema.
 func (d *Database) InitNotificationsSchema() error {
-	// Create the notifications table
-	_, err := d.db.Exec(`
+	ctx, cancel := context.WithTimeout(d.ctx, queryTimeout)
+	defer cancel()
+
+	// action_url and action_label default to '' rather than being nullable, so
+	// reads can scan straight into a string without a sql.NullString dance.
+	if _, err := d.db.ExecContext(ctx, `
 	CREATE TABLE IF NOT EXISTS notifications (
 		id TEXT PRIMARY KEY,
 		title TEXT NOT NULL,
@@ -22,275 +34,292 @@ func (d *Database) InitNotificationsSchema() error {
 		source TEXT NOT NULL,
 		read INTEGER NOT NULL DEFAULT 0,
 		dismissed INTEGER NOT NULL DEFAULT 0,
-		action_url TEXT,
-		action_label TEXT,
-		tags TEXT
-	)`)
-	if err != nil {
+		action_url TEXT NOT NULL DEFAULT '',
+		action_label TEXT NOT NULL DEFAULT '',
+		tags TEXT NOT NULL DEFAULT '[]'
+	)`); err != nil {
 		return fmt.Errorf("failed to create notifications table: %w", err)
 	}
 
-	// Create index for timestamp
-	_, err = d.db.Exec(`CREATE INDEX IF NOT EXISTS idx_notifications_timestamp ON notifications(timestamp)`)
-	if err != nil {
-		return fmt.Errorf("failed to create notifications index: %w", err)
+	indexes := []string{
+		"CREATE INDEX IF NOT EXISTS idx_notifications_timestamp ON notifications(timestamp)",
+		// Matches the (dismissed, read) predicate every list query applies
+		// before ordering by time.
+		"CREATE INDEX IF NOT EXISTS idx_notifications_state_timestamp ON notifications(dismissed, read, timestamp)",
+	}
+	for _, stmt := range indexes {
+		if _, err := d.db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("failed to create notifications index: %w", err)
+		}
 	}
 
 	return nil
 }
 
-// AddNotification adds a new notification to the database
+// AddNotification adds a new notification to the database, generating an ID and
+// timestamp when they are not supplied.
 func (d *Database) AddNotification(notification models.Notification) error {
-	// Generate ID if not provided
+	if notification.Title == "" {
+		return errors.New("storage: notification title is required")
+	}
 	if notification.ID == "" {
 		notification.ID = uuid.New().String()
 	}
-
-	// Set timestamp if not provided
 	if notification.Timestamp.IsZero() {
 		notification.Timestamp = time.Now()
 	}
 
-	// Convert tags to string
-	tags := ""
-	if len(notification.Tags) > 0 {
-		tags = fmt.Sprintf("%v", notification.Tags)
+	// Tags are stored as JSON. The previous format was fmt.Sprintf("%v", tags),
+	// which produced "[a b c]" and could not round-trip a tag containing a
+	// space.
+	tags, err := json.Marshal(notification.Tags)
+	if err != nil {
+		return fmt.Errorf("encoding tags for notification %s: %w", notification.ID, err)
 	}
 
-	// Insert notification
-	_, err := d.db.Exec(
-		`INSERT INTO notifications (
-			id, title, message, timestamp, severity, source, read, dismissed, action_url, action_label, tags
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	ctx, cancel := context.WithTimeout(d.ctx, queryTimeout)
+	defer cancel()
+
+	if _, err := d.db.ExecContext(ctx, `
+	INSERT INTO notifications (`+notificationColumns+`)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		notification.ID,
 		notification.Title,
 		notification.Message,
 		notification.Timestamp.Unix(),
-		notification.Severity,
-		notification.Source,
-		boolToInt(notification.Read),
-		boolToInt(notification.Dismissed),
+		string(notification.Severity),
+		string(notification.Source),
+		notification.Read,
+		notification.Dismissed,
 		notification.ActionURL,
 		notification.ActionLabel,
-		tags,
-	)
-
-	if err != nil {
-		return fmt.Errorf("failed to insert notification: %w", err)
+		string(tags),
+	); err != nil {
+		return fmt.Errorf("inserting notification %s: %w", notification.ID, err)
 	}
 
 	return nil
 }
 
-// GetNotifications retrieves notifications from the database
+// GetNotifications retrieves the most recent undismissed notifications.
 func (d *Database) GetNotifications(count int, includeRead bool) ([]models.Notification, error) {
-	// Prepare query
-	query := `
-		SELECT id, title, message, timestamp, severity, source, read, dismissed, action_url, action_label, tags
-		FROM notifications
-		WHERE dismissed = 0
-	`
+	return d.GetFilteredNotifications(count, includeRead, nil, nil)
+}
 
-	// Add read filter if needed
+// GetFilteredNotifications retrieves undismissed notifications, optionally
+// restricted to the given sources and severities.
+//
+// Both filters are applied in SQL with bound parameters. An earlier revision
+// interpolated the values directly into an IN clause, which broke on any value
+// containing a quote and allowed statement injection from notification data.
+// The storage adapter additionally re-filtered in Go over a bounded row window,
+// which silently hid matches beyond it.
+func (d *Database) GetFilteredNotifications(count int, includeRead bool, sources, severities []string) ([]models.Notification, error) {
+	var (
+		conditions = []string{"dismissed = 0"}
+		args       []any
+	)
+
 	if !includeRead {
-		query += " AND read = 0"
+		conditions = append(conditions, "read = 0")
+	}
+	if clause, values := inClause("source", sources); clause != "" {
+		conditions = append(conditions, clause)
+		args = append(args, values...)
+	}
+	if clause, values := inClause("severity", severities); clause != "" {
+		conditions = append(conditions, clause)
+		args = append(args, values...)
 	}
 
-	// Add order and limit
-	query += " ORDER BY timestamp DESC"
+	query := `SELECT ` + notificationColumns + ` FROM notifications WHERE ` +
+		strings.Join(conditions, " AND ") + ` ORDER BY timestamp DESC`
+
 	if count > 0 {
-		query += fmt.Sprintf(" LIMIT %d", count)
+		query += " LIMIT ?"
+		args = append(args, count)
 	}
 
-	// Execute query
-	rows, err := d.db.Query(query)
+	ctx, cancel := context.WithTimeout(d.ctx, queryTimeout)
+	defer cancel()
+
+	rows, err := d.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query notifications: %w", err)
+		return nil, fmt.Errorf("querying notifications: %w", err)
 	}
 	defer rows.Close()
 
-	// Parse results
-	notifications := []models.Notification{}
-	for rows.Next() {
-		var n models.Notification
-		var timestamp int64
-		var read, dismissed int
-		var tags string
+	return scanNotifications(rows)
+}
 
-		err := rows.Scan(
+// inClause builds a parameterised IN predicate for column, returning an empty
+// clause when there are no values to match.
+func inClause(column string, values []string) (string, []any) {
+	if len(values) == 0 {
+		return "", nil
+	}
+
+	args := make([]any, 0, len(values))
+	for _, v := range values {
+		args = append(args, v)
+	}
+
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(values)), ",")
+	return fmt.Sprintf("%s IN (%s)", column, placeholders), args
+}
+
+// scanNotifications reads a notification result set.
+func scanNotifications(rows *sql.Rows) ([]models.Notification, error) {
+	notifications := []models.Notification{}
+
+	for rows.Next() {
+		var (
+			n         models.Notification
+			timestamp int64
+			tagsJSON  string
+		)
+
+		if err := rows.Scan(
 			&n.ID,
 			&n.Title,
 			&n.Message,
 			&timestamp,
 			&n.Severity,
 			&n.Source,
-			&read,
-			&dismissed,
+			&n.Read,
+			&n.Dismissed,
 			&n.ActionURL,
 			&n.ActionLabel,
-			&tags,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan notification row: %w", err)
+			&tagsJSON,
+		); err != nil {
+			return nil, fmt.Errorf("scanning notification: %w", err)
 		}
 
-		// Convert values
 		n.Timestamp = time.Unix(timestamp, 0)
-		n.Read = intToBool(read)
-		n.Dismissed = intToBool(dismissed)
-
-		// Parse tags if not empty
-		if tags != "" {
-			n.Tags = parseTags(tags)
+		if tagsJSON != "" {
+			if err := json.Unmarshal([]byte(tagsJSON), &n.Tags); err != nil {
+				return nil, fmt.Errorf("decoding tags for notification %s: %w", n.ID, err)
+			}
 		}
 
 		notifications = append(notifications, n)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating notifications: %w", err)
+	}
+
 	return notifications, nil
 }
 
-// MarkAsRead marks a notification as read
+// MarkAsRead marks a notification as read. It returns an error wrapping
+// ErrNotFound when no notification has the given ID.
 func (d *Database) MarkAsRead(id string) error {
-	_, err := d.db.Exec("UPDATE notifications SET read = 1 WHERE id = ?", id)
-	if err != nil {
-		return fmt.Errorf("failed to mark notification as read: %w", err)
-	}
-	return nil
+	return d.updateNotificationFlag(id, "read")
 }
 
-// DismissNotification marks a notification as dismissed
+// DismissNotification marks a notification as dismissed. It returns an error
+// wrapping ErrNotFound when no notification has the given ID.
 func (d *Database) DismissNotification(id string) error {
-	_, err := d.db.Exec("UPDATE notifications SET dismissed = 1 WHERE id = ?", id)
-	if err != nil {
-		return fmt.Errorf("failed to dismiss notification: %w", err)
+	return d.updateNotificationFlag(id, "dismissed")
+}
+
+// updateNotificationFlag sets one boolean column on a single notification.
+// column is supplied only by this package's own callers, never by user input.
+func (d *Database) updateNotificationFlag(id, column string) error {
+	if id == "" {
+		return errors.New("storage: notification ID is required")
 	}
+
+	ctx, cancel := context.WithTimeout(d.ctx, queryTimeout)
+	defer cancel()
+
+	result, err := d.db.ExecContext(ctx,
+		fmt.Sprintf("UPDATE notifications SET %s = 1 WHERE id = ?", column), id)
+	if err != nil {
+		return fmt.Errorf("updating %s on notification %s: %w", column, id, err)
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("counting updated notifications: %w", err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("notification %s: %w", id, ErrNotFound)
+	}
+
 	return nil
 }
 
-// ClearAllNotifications marks all notifications as dismissed
+// ClearAllNotifications marks every notification as dismissed and reports how
+// many were affected.
 func (d *Database) ClearAllNotifications() error {
-	_, err := d.db.Exec("UPDATE notifications SET dismissed = 1")
+	ctx, cancel := context.WithTimeout(d.ctx, queryTimeout)
+	defer cancel()
+
+	result, err := d.db.ExecContext(ctx, "UPDATE notifications SET dismissed = 1 WHERE dismissed = 0")
 	if err != nil {
-		return fmt.Errorf("failed to clear all notifications: %w", err)
+		return fmt.Errorf("clearing notifications: %w", err)
 	}
+
+	if affected, err := result.RowsAffected(); err == nil {
+		d.logger.Debug("notifications cleared", "count", affected)
+	}
+
 	return nil
 }
 
-// GetUnreadNotificationCount returns the count of unread notifications
+// GetUnreadNotificationCount returns the number of unread, undismissed
+// notifications.
 func (d *Database) GetUnreadNotificationCount() (int, error) {
+	ctx, cancel := context.WithTimeout(d.ctx, queryTimeout)
+	defer cancel()
+
 	var count int
-	err := d.db.QueryRow("SELECT COUNT(*) FROM notifications WHERE read = 0 AND dismissed = 0").Scan(&count)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get unread notification count: %w", err)
+	if err := d.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM notifications WHERE read = 0 AND dismissed = 0").Scan(&count); err != nil {
+		return 0, fmt.Errorf("counting unread notifications: %w", err)
 	}
+
 	return count, nil
 }
 
-// GetFilteredNotifications retrieves notifications with filters
-func (d *Database) GetFilteredNotifications(count int, includeRead bool, sources []string, severities []string) ([]models.Notification, error) {
-	// Prepare base query
-	query := `
-		SELECT id, title, message, timestamp, severity, source, read, dismissed, action_url, action_label, tags
-		FROM notifications
-		WHERE dismissed = 0
-	`
+// GetNotificationSources returns the distinct sources present in the store, for
+// populating the filter UI.
+func (d *Database) GetNotificationSources() ([]string, error) {
+	return d.distinctNotificationColumn("source")
+}
 
-	// Add read filter if needed
-	if !includeRead {
-		query += " AND read = 0"
-	}
+// GetNotificationSeverities returns the distinct severities present in the
+// store, for populating the filter UI.
+func (d *Database) GetNotificationSeverities() ([]string, error) {
+	return d.distinctNotificationColumn("severity")
+}
 
-	// Add source filter if specified
-	if len(sources) > 0 {
-		sourceParams := make([]string, len(sources))
-		for i, source := range sources {
-			sourceParams[i] = fmt.Sprintf("'%s'", source)
-		}
-		query += fmt.Sprintf(" AND source IN (%s)", strings.Join(sourceParams, ","))
-	}
+// distinctNotificationColumn returns the distinct non-empty values of one
+// column. column is supplied only by this package's own callers.
+func (d *Database) distinctNotificationColumn(column string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(d.ctx, queryTimeout)
+	defer cancel()
 
-	// Add severity filter if specified
-	if len(severities) > 0 {
-		severityParams := make([]string, len(severities))
-		for i, severity := range severities {
-			severityParams[i] = fmt.Sprintf("'%s'", severity)
-		}
-		query += fmt.Sprintf(" AND severity IN (%s)", strings.Join(severityParams, ","))
-	}
-
-	// Add order and limit
-	query += " ORDER BY timestamp DESC"
-	if count > 0 {
-		query += fmt.Sprintf(" LIMIT %d", count)
-	}
-
-	// Execute query
-	rows, err := d.db.Query(query)
+	rows, err := d.db.QueryContext(ctx, fmt.Sprintf(
+		"SELECT DISTINCT %s FROM notifications WHERE %s != '' ORDER BY %s", column, column, column))
 	if err != nil {
-		return nil, fmt.Errorf("failed to query notifications: %w", err)
+		return nil, fmt.Errorf("listing notification %s values: %w", column, err)
 	}
 	defer rows.Close()
 
-	// Parse results
-	notifications := []models.Notification{}
+	var values []string
 	for rows.Next() {
-		var n models.Notification
-		var timestamp int64
-		var read, dismissed int
-		var tags string
-
-		err := rows.Scan(
-			&n.ID,
-			&n.Title,
-			&n.Message,
-			&timestamp,
-			&n.Severity,
-			&n.Source,
-			&read,
-			&dismissed,
-			&n.ActionURL,
-			&n.ActionLabel,
-			&tags,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan notification row: %w", err)
+		var value string
+		if err := rows.Scan(&value); err != nil {
+			return nil, fmt.Errorf("scanning notification %s: %w", column, err)
 		}
-
-		// Convert values
-		n.Timestamp = time.Unix(timestamp, 0)
-		n.Read = intToBool(read)
-		n.Dismissed = intToBool(dismissed)
-
-		// Parse tags if not empty
-		if tags != "" {
-			n.Tags = parseTags(tags)
-		}
-
-		notifications = append(notifications, n)
+		values = append(values, value)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating notification %s values: %w", column, err)
 	}
 
-	return notifications, nil
-}
-
-// Helper functions
-func boolToInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
-}
-
-func intToBool(i int) bool {
-	return i != 0
-}
-
-func parseTags(tagsStr string) []string {
-	// Simple implementation - in a real system you'd want better parsing
-	tagsStr = strings.TrimPrefix(tagsStr, "[")
-	tagsStr = strings.TrimSuffix(tagsStr, "]")
-	if tagsStr == "" {
-		return []string{}
-	}
-	return strings.Split(tagsStr, " ")
+	return values, nil
 }
