@@ -35,6 +35,13 @@ type Storage interface {
 	GetPendingCommitsHistory(repoName string, period time.Duration, points int) ([]models.TimeSeriesPoint, error)
 	GetAllGitRepositories() ([]string, error)
 
+	// Infrastructure summary history
+	GetCloudInstanceCountHistory(period time.Duration, points int) ([]models.TimeSeriesPoint, error)
+	GetCloudCPUHistory(period time.Duration, points int) ([]models.TimeSeriesPoint, error)
+	GetKubernetesPodCountHistory(period time.Duration, points int) ([]models.TimeSeriesPoint, error)
+	GetKubernetesNodeReadyHistory(period time.Duration, points int) ([]models.TimeSeriesPoint, error)
+	GetCICDSuccessRateHistory(period time.Duration, points int) ([]models.TimeSeriesPoint, error)
+
 	// Event annotations
 	GetEventAnnotations(period time.Duration) ([]models.EventAnnotation, error)
 	AddEventAnnotation(event models.EventAnnotation) error
@@ -129,10 +136,15 @@ type App struct {
 	TermHeight     int
 	ShowHelp       bool
 
-	// Collectors
-	SystemCollector *collector.SystemMetricsCollector
-	HTTPCollector   *collector.HTTPHealthChecker
-	GitCollector    *collector.GitStatusCollector
+	// Collectors. The infrastructure ones are nil unless their configuration
+	// block enables them, and the corresponding tab is only created when they
+	// exist, so an unconfigured provider is absent rather than shown empty.
+	SystemCollector     *collector.SystemMetricsCollector
+	HTTPCollector       *collector.HTTPHealthChecker
+	GitCollector        *collector.GitStatusCollector
+	CloudCollector      *collector.AWSCollector
+	KubernetesCollector *collector.KubernetesCollector
+	CICDCollector       *collector.GitHubActionsCollector
 
 	// Persistence
 	Storage         Storage
@@ -219,6 +231,15 @@ func (a *App) applyStorageProvider() {
 	}
 	if a.GitCollector != nil {
 		a.GitCollector.SetStorageProvider(a.storageProvider)
+	}
+	if a.CloudCollector != nil {
+		a.CloudCollector.SetStorageProvider(a.storageProvider)
+	}
+	if a.KubernetesCollector != nil {
+		a.KubernetesCollector.SetStorageProvider(a.storageProvider)
+	}
+	if a.CICDCollector != nil {
+		a.CICDCollector.SetStorageProvider(a.storageProvider)
 	}
 }
 

@@ -29,6 +29,12 @@ type StorageProvider interface {
 	StoreSystemMetrics(metrics models.SystemMetrics) error
 	StoreHTTPMetrics(name string, metrics models.EndpointMetrics) error
 	StoreGitMetrics(metrics models.GitRepoMetrics) error
+
+	// The infrastructure providers persist aggregates rather than per-resource
+	// rows; see docs/adr/0001-infrastructure-integrations.md.
+	StoreCloudSummary(summary models.CloudSummary) error
+	StoreKubernetesSummary(summary models.KubernetesSummary) error
+	StoreCICDSummary(summary models.CICDSummary) error
 }
 
 // Collector is implemented by every metrics source.

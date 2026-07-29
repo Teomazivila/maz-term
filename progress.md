@@ -34,9 +34,14 @@ marked complete on the strength of the code merely existing.
 - [x] Git status: branch, real branch list, commit count, unpushed commits,
       tracked modifications and untracked files counted separately, individual
       changed files, and commit history.
-- [ ] Cloud provider integrations — **not implemented**
-- [ ] Kubernetes metrics — **not implemented**
-- [ ] CI/CD pipeline status — **not implemented**
+- [x] AWS: EC2 instances, S3 buckets, RDS instances, CloudWatch utilisation.
+      Read-only, off by default, partial failures reported per region and service.
+- [x] Kubernetes: nodes, pods, deployments, services via client-go, with the
+      optional metrics API used when present. Surfaces a container's waiting
+      reason, so a crash-looping pod behind a Running phase is visible.
+- [x] GitHub Actions: workflows and recent runs, with success rate and mean
+      duration computed over completed runs only, and the remaining API quota
+      shown.
 
 ### Storage
 - [x] SQLite persistence via a pure-Go driver, so the binary needs no cgo.
@@ -79,8 +84,9 @@ marked complete on the strength of the code merely existing.
 
 | Gap | Notes |
 |---|---|
-| Cloud, Kubernetes, CI/CD collectors | Configuration keys are parsed and validated; nothing reads them. The previous simulated collectors were removed rather than left to imply they worked. |
-| UI test coverage 38.6% | Layout, frame assembly, key handling and range selection are covered. The per-tab data-population functions are not. |
+| Per-resource infrastructure history | Only aggregates are persisted for the three providers (instance and pod counts, success rate). Per-instance or per-pod history would need a schema change; see ADR-0001. |
+| S3 bucket size and object count | Not collected. They come from daily CloudWatch storage metrics, which would report a figure up to a day stale. |
+| UI test coverage 39.0% | Layout, frame assembly, key handling and range selection are covered. The per-tab data-population functions are not. |
 | `cmd/maz-term` coverage 0% | Wiring only; exercised end-to-end rather than by unit tests. |
 | Alert thresholds | `expected_status` and `timeout` are enforced; `AlertConfig` thresholds from the PRD are not evaluated. |
 | Command palette | Not implemented (PRD §2.1). |

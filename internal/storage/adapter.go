@@ -39,6 +39,46 @@ func (a *Adapter) StoreGitMetrics(metrics models.GitRepoMetrics) error {
 	return a.db.StoreGitMetrics(metrics)
 }
 
+// StoreCloudSummary stores one cloud provider aggregate.
+func (a *Adapter) StoreCloudSummary(summary models.CloudSummary) error {
+	return a.db.StoreCloudSummary(summary)
+}
+
+// StoreKubernetesSummary stores one cluster aggregate.
+func (a *Adapter) StoreKubernetesSummary(summary models.KubernetesSummary) error {
+	return a.db.StoreKubernetesSummary(summary)
+}
+
+// StoreCICDSummary stores one CI/CD provider aggregate.
+func (a *Adapter) StoreCICDSummary(summary models.CICDSummary) error {
+	return a.db.StoreCICDSummary(summary)
+}
+
+// GetCloudInstanceCountHistory returns the running-instance count over time.
+func (a *Adapter) GetCloudInstanceCountHistory(period time.Duration, points int) ([]models.TimeSeriesPoint, error) {
+	return a.db.GetCloudInstanceCountHistory(period, points)
+}
+
+// GetCloudCPUHistory returns mean instance CPU utilisation over time.
+func (a *Adapter) GetCloudCPUHistory(period time.Duration, points int) ([]models.TimeSeriesPoint, error) {
+	return a.db.GetCloudCPUHistory(period, points)
+}
+
+// GetKubernetesPodCountHistory returns the running-pod count over time.
+func (a *Adapter) GetKubernetesPodCountHistory(period time.Duration, points int) ([]models.TimeSeriesPoint, error) {
+	return a.db.GetKubernetesPodCountHistory(period, points)
+}
+
+// GetKubernetesNodeReadyHistory returns the ready-node count over time.
+func (a *Adapter) GetKubernetesNodeReadyHistory(period time.Duration, points int) ([]models.TimeSeriesPoint, error) {
+	return a.db.GetKubernetesNodeReadyHistory(period, points)
+}
+
+// GetCICDSuccessRateHistory returns the workflow success rate over time.
+func (a *Adapter) GetCICDSuccessRateHistory(period time.Duration, points int) ([]models.TimeSeriesPoint, error) {
+	return a.db.GetCICDSuccessRateHistory(period, points)
+}
+
 // GetCPUUsageHistory fetches historical CPU usage data
 func (a *Adapter) GetCPUUsageHistory(period time.Duration, points int) ([]models.TimeSeriesPoint, error) {
 	return a.db.GetCPUUsageHistory(period, points)

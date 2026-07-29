@@ -24,12 +24,21 @@ Working today:
 | Notification centre with filtering | ✅ |
 | CSV export | ✅ |
 | Plugins (opt-in build, digest-verified) | ✅ |
-| Cloud (AWS), Kubernetes and CI/CD monitoring | ❌ not implemented |
+| AWS: EC2, S3, RDS with CloudWatch utilisation | ✅ |
+| Kubernetes: nodes, pods, deployments, services | ✅ |
+| GitHub Actions: workflows and run history | ✅ |
 
-Cloud, Kubernetes and CI/CD are **not built**. Earlier revisions shipped
-collectors for them that returned hardcoded inventories while the UI displayed
-"Connected"; those have been removed rather than left to mislead. The
-configuration keys exist and are validated, but nothing reads them yet.
+All three infrastructure providers are **off by default** and only appear as tabs
+once configured. Every call they make is read-only, and a provider that cannot be
+reached shows the reason rather than an empty view or a claimed connection.
+
+Credentials never come from the configuration file: AWS uses its standard
+credential chain, Kubernetes uses kubeconfig or the in-cluster service account,
+and GitHub reads `MAZTERM_GITHUB_TOKEN` or `GITHUB_TOKEN`. A file containing
+`access_key_id`, `secret_access_key` or `token` is rejected at startup.
+
+See [docs/adr/0001-infrastructure-integrations.md](docs/adr/0001-infrastructure-integrations.md)
+for why each dependency was chosen and why only aggregates are persisted.
 
 ## Install
 

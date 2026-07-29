@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/Teomazivila/maz-term/pkg/collector"
@@ -73,7 +74,44 @@ func NewApp(cfg *config.Config) *App {
 		}
 	}
 
+	// Provider tabs exist only when that provider is configured. An
+	// unconfigured provider has no tab rather than an empty one claiming a
+	// connection it does not have.
+	for _, provider := range []struct {
+		name    string
+		enabled bool
+	}{
+		{"Cloud", awsEnabled(cfg)},
+		{"Kubernetes", cfg.Kubernetes.Enabled},
+		{"CI/CD", githubEnabled(cfg)},
+	} {
+		if provider.enabled && app.getTabByName(provider.name) == nil {
+			app.Tabs = append(app.Tabs, NewTab(config.LayoutTab{Name: provider.name}))
+		}
+	}
+
 	return app
+}
+
+// awsEnabled reports whether the configuration asks for AWS collection.
+func awsEnabled(cfg *config.Config) bool {
+	for _, provider := range cfg.Cloud.Enabled {
+		if strings.EqualFold(strings.TrimSpace(provider), "aws") {
+			return true
+		}
+	}
+	return false
+}
+
+// githubEnabled reports whether the configuration asks for GitHub Actions
+// collection.
+func githubEnabled(cfg *config.Config) bool {
+	for _, provider := range cfg.CICD.Enabled {
+		if strings.EqualFold(strings.TrimSpace(provider), "github") {
+			return true
+		}
+	}
+	return false
 }
 
 // NewTab creates a tab from its layout configuration.
@@ -148,21 +186,86 @@ func (a *App) initCollectors(ctx context.Context) {
 	}
 	a.GitCollector = collector.NewGitStatusCollector(gitPath)
 
+	started := []collector.Collector{a.SystemCollector, a.HTTPCollector, a.GitCollector}
+	intervals := []time.Duration{interval, interval, interval}
+
+	// Infrastructure providers poll remote APIs, so they default to their own
+	// slower intervals to stay within rate limits and cost budgets.
+	if awsEnabled(a.Config) {
+		a.CloudCollector = collector.NewAWSCollector(collector.AWSConfig{
+			Region:            a.Config.Cloud.AWS.Region,
+			Profile:           a.Config.Cloud.AWS.Profile,
+			AdditionalRegions: a.Config.Cloud.AWS.AdditionalRegions,
+			Resources:         a.Config.Cloud.AWS.Resources,
+		})
+		started = append(started, a.CloudCollector)
+		intervals = append(intervals, orDefault(a.Config.Cloud.Refresh, time.Minute))
+	}
+
+	if a.Config.Kubernetes.Enabled {
+		a.KubernetesCollector = collector.NewKubernetesCollector(collector.KubernetesConfig{
+			ConfigPath: a.Config.Kubernetes.ConfigPath,
+			Context:    a.Config.Kubernetes.Context,
+			Namespaces: a.Config.Kubernetes.Namespaces,
+			Resources:  a.Config.Kubernetes.Resources,
+		})
+		started = append(started, a.KubernetesCollector)
+		intervals = append(intervals, orDefault(a.Config.Kubernetes.Refresh, 30*time.Second))
+	}
+
+	if githubEnabled(a.Config) {
+		a.CICDCollector = collector.NewGitHubActionsCollector(collector.GitHubConfig{
+			Owner:        a.Config.CICD.GitHub.Owner,
+			Repositories: a.Config.CICD.GitHub.Repositories,
+			Workflows:    a.Config.CICD.GitHub.Workflows,
+			// Read from the environment, never from the configuration file.
+			Token: config.GitHubToken(),
+		})
+		started = append(started, a.CICDCollector)
+		intervals = append(intervals, orDefault(a.Config.CICD.Refresh, 2*time.Minute))
+	}
+
 	// Apply the store recorded by SetStorageProvider before wiring up, so the
 	// very first sample is persisted.
 	a.applyStorageProvider()
 
-	for _, c := range []collector.Collector{a.SystemCollector, a.HTTPCollector, a.GitCollector} {
-		if err := c.Start(ctx, interval); err != nil {
+	for i, c := range started {
+		if err := c.Start(ctx, intervals[i]); err != nil {
 			logger.Error("failed to start collector", "collector", c.Name(), "error", err)
 			a.setStatus("collector %s failed to start: %v", c.Name(), err)
 		}
 	}
 }
 
+// orDefault returns value when positive, otherwise fallback.
+func orDefault(value, fallback time.Duration) time.Duration {
+	if value > 0 {
+		return value
+	}
+	return fallback
+}
+
+// collectors returns every constructed collector.
+func (a *App) collectors() []collector.Collector {
+	all := []collector.Collector{a.SystemCollector, a.HTTPCollector, a.GitCollector}
+
+	// Typed nil pointers would satisfy the interface and pass a != nil check, so
+	// each is tested before being added.
+	if a.CloudCollector != nil {
+		all = append(all, a.CloudCollector)
+	}
+	if a.KubernetesCollector != nil {
+		all = append(all, a.KubernetesCollector)
+	}
+	if a.CICDCollector != nil {
+		all = append(all, a.CICDCollector)
+	}
+	return all
+}
+
 // stopCollectors stops every collector and waits for them to finish.
 func (a *App) stopCollectors() {
-	for _, c := range []collector.Collector{a.SystemCollector, a.HTTPCollector, a.GitCollector} {
+	for _, c := range a.collectors() {
 		if c == nil {
 			continue
 		}

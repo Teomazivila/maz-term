@@ -19,6 +19,9 @@ type recordingStore struct {
 	system []models.SystemMetrics
 	http   []models.EndpointMetrics
 	git    []models.GitRepoMetrics
+	cloud  []models.CloudSummary
+	k8s    []models.KubernetesSummary
+	cicd   []models.CICDSummary
 	fail   bool
 }
 
@@ -52,10 +55,57 @@ func (s *recordingStore) StoreGitMetrics(m models.GitRepoMetrics) error {
 	return nil
 }
 
+func (s *recordingStore) StoreCloudSummary(summary models.CloudSummary) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.fail {
+		return errors.New("store unavailable")
+	}
+	s.cloud = append(s.cloud, summary)
+	return nil
+}
+
+func (s *recordingStore) StoreKubernetesSummary(summary models.KubernetesSummary) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.fail {
+		return errors.New("store unavailable")
+	}
+	s.k8s = append(s.k8s, summary)
+	return nil
+}
+
+func (s *recordingStore) StoreCICDSummary(summary models.CICDSummary) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.fail {
+		return errors.New("store unavailable")
+	}
+	s.cicd = append(s.cicd, summary)
+	return nil
+}
+
 func (s *recordingStore) counts() (int, int, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.system), len(s.http), len(s.git)
+}
+
+// infraCounts reports how many provider summaries were recorded.
+func (s *recordingStore) infraCounts() (int, int, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.cloud), len(s.k8s), len(s.cicd)
+}
+
+// lastCloud returns the most recent cloud summary.
+func (s *recordingStore) lastCloud() models.CloudSummary {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.cloud) == 0 {
+		return models.CloudSummary{}
+	}
+	return s.cloud[len(s.cloud)-1]
 }
 
 // recordingStore must satisfy the interface collectors depend on. A concrete

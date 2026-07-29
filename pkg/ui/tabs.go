@@ -32,6 +32,8 @@ func (a *App) layoutTab(tab *Tab, rect image.Rectangle) []ui.Drawable {
 		return a.layoutNotificationsTab(tab, rect)
 	case "Plugins":
 		return a.layoutPluginsTab(tab, rect)
+	case "Cloud", "Kubernetes", "CI/CD":
+		return a.layoutProviderTab(tab, rect)
 	default:
 		return a.layoutDefaultTab(tab, rect)
 	}

@@ -37,6 +37,9 @@ func (a *App) updateData() {
 	a.updateHTTPTabData()
 	a.updateGitTabData()
 	a.updateHistoryTabData()
+	a.updateCloudTabData()
+	a.updateKubernetesTabData()
+	a.updateCICDTabData()
 	a.updateNotificationsTabData()
 	a.updatePluginsTabData()
 }

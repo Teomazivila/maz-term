@@ -280,6 +280,11 @@ func (d *Database) initSchema(ctx context.Context) error {
 		return fmt.Errorf("failed to initialize notifications schema: %w", err)
 	}
 
+	// Initialize infrastructure summary schema
+	if err := d.initInfraSchema(ctx); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -327,7 +332,10 @@ func (d *Database) cleanupOldData() error {
 
 	// Delete old data from all tables. Annotations are included so they do not
 	// outlive the metrics they annotate and grow without bound.
-	tables := []string{"system_metrics", "disk_metrics", "http_metrics", "git_metrics", "annotations"}
+	tables := []string{
+		"system_metrics", "disk_metrics", "http_metrics", "git_metrics", "annotations",
+		"cloud_summary", "kubernetes_summary", "cicd_summary",
+	}
 	totalDeleted := 0
 
 	for _, table := range tables {
