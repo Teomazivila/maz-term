@@ -1,155 +1,107 @@
-# DevOps Terminal Dashboard - Implementation Progress
+# maz-term - Implementation Progress
 
-## Current Implementation Status
+This is the single authoritative status document. `PRD.md` holds the
+specification; `execution-plan.md`, `implementation-plan.md` and `next-tasks.md`
+are historical planning records and should not be read as current state — they
+contradicted each other and this file.
 
-### Core Framework
-- [x] Base TermUI application structure
-- [x] Configuration loading system
-- [x] Command-line interface with flags
-- [x] Basic tab navigation
-- [x] Full keyboard shortcut system
-- [x] Help/documentation system in-app
+Every ✅ below has been verified by a test or by running the binary. Nothing is
+marked complete on the strength of the code merely existing.
 
-### Data Collection
-- [x] System metrics collector (CPU, memory, disk)
-- [x] HTTP health checker
-- [x] Git status collector
-- [ ] Cloud provider integrations
-- [ ] Kubernetes metrics
-- [ ] CI/CD pipeline status
+**Last verified**: 2026-07-29, commit range `357631c..HEAD`.
 
-### UI Components
-- [x] Basic dashboard layout with tabs
-- [x] CPU and memory gauges
-- [x] CPU history sparkline
-- [x] Disk usage bar chart
-- [x] Status bar
-- [x] HTTP endpoints table with status indicators
-- [x] Git repository status view
-- [x] Historical data visualization
-- [x] Process table
-- [x] Time range selection for historical data
-- [x] Event annotations on metrics charts
-- [x] Interactive zoom functionality for detailed analysis
-- [x] Metric comparison view for correlation analysis
-- [ ] Command palette
-- [ ] Notification center
+## Verified working
+
+### Core
+- [x] TermUI application that renders. Verified end-to-end against a real pty.
+- [x] Configuration loading with validation, environment overrides and rejection
+      of unknown keys and of credentials in files.
+- [x] CLI flags: `-config`, `-data-path`, `-log-file`, `-no-storage`, `-debug`,
+      `-version`.
+- [x] Tab navigation and keyboard handling; in-app help generated from the
+      bindings that exist.
+- [x] Clean shutdown on `q`, `Ctrl-C`, SIGINT and SIGTERM, with collectors and
+      the database closed in order.
+- [x] Logs written to a file, never to the terminal.
+
+### Data collection
+- [x] System metrics: CPU (overall and per core), memory, swap, disk per mount,
+      network per interface. Verified recording real values.
+- [x] Top processes by CPU, sampled on an independent cadence so the sweep
+      cannot stall the refresh cycle.
+- [x] HTTP endpoint checks with status, response time, transport errors and a
+      rolling availability percentage.
+- [x] Git status: branch, real branch list, commit count, unpushed commits,
+      tracked modifications and untracked files counted separately, individual
+      changed files, and commit history.
+- [ ] Cloud provider integrations — **not implemented**
+- [ ] Kubernetes metrics — **not implemented**
+- [ ] CI/CD pipeline status — **not implemented**
 
 ### Storage
-- [x] SQLite database integration for historical data
-- [x] Data export functionality (CSV format)
-- [x] Configuration persistence
-- [x] Data retention policies
-- [x] Event annotations storage
+- [x] SQLite persistence via a pure-Go driver, so the binary needs no cgo.
+- [x] Metrics history for system, disk, HTTP and Git.
+- [x] Event annotations, actually persisted, with tags that round-trip.
+- [x] Notifications with SQL-level filtering by source and severity.
+- [x] Retention policy that deletes only rows past the cutoff.
+- [x] CSV export that reports read failures instead of writing nothing.
+- [x] No demo or seeded data. An empty database renders an empty history.
 
-### Security
-- [ ] Secure credential storage
-- [ ] Environment-based secrets support
+### UI
+- [x] CPU and memory gauges, CPU sparkline, disk bar chart, process table.
+- [x] HTTP endpoint table with real availability, response-time and availability
+      sparklines, per-endpoint detail.
+- [x] Git summary, changed-file list, commit table, branch list.
+- [x] History plots with selectable ranges (1h → 30d) driven by one table that
+      the legend and key handler both read.
+- [x] Annotation overlay and a form whose input accumulates.
+- [x] Notification list, detail view and an interactive filter picker.
+- [x] Plugin list and detail view.
+- [x] Colour coding via termui's own styling, not markup from another library.
+- [x] Graceful behaviour in a terminal too small to lay out.
 
-## Observations
+### Plugins
+- [x] Manager with panic containment and per-plugin collection timeouts.
+- [x] Digest-verified loading confined to the plugin directory, refusing
+      group- or world-writable files.
+- [x] Hot reload via an event queue drained by the render goroutine.
+- [x] Loading is opt-in at build time; the default binary stays portable.
 
-The current implementation uses TermUI Based on the latest developments:
+### Quality gates
+- [x] `go build ./...` and the plugin-tagged build both succeed.
+- [x] Tests pass under `-race`.
+- [x] `golangci-lint` configured and wired into `make lint` and CI.
+- [x] CI: build, vet, formatting, race tests with coverage, lint, govulncheck,
+      a six-platform cgo-free cross-compile matrix, and an AI-attribution check.
+- [x] Cross-compilation verified for linux, darwin and windows on amd64/arm64.
 
-1. **Working Components**:
-   - System metrics display (CPU/Memory gauges, CPU history, Disk usage)
-   - HTTP endpoints status monitoring with response time visualization
-   - Git repository status display with commit history
-   - Historical data visualization across all metrics
-   - Time range selection for historical data (1h, 6h, 12h, 24h, 3d, 7d)
-   - Event annotations for visualizing important system events
-   - Interactive zoom functionality for detailed time period analysis
-   - Metric comparison view for correlation analysis across different metrics
-   - Data export functionality to CSV files
-   - Enhanced configuration with user-friendly duration formats
-   - Tab navigation with keyboard shortcuts
-   - Help system with documentation
+## Known gaps
 
-2. **Partially Implemented**:
-   - Some advanced visualization elements
-   - Service status indicators for complex services
+| Gap | Notes |
+|---|---|
+| Cloud, Kubernetes, CI/CD collectors | Configuration keys are parsed and validated; nothing reads them. The previous simulated collectors were removed rather than left to imply they worked. |
+| UI test coverage 38.6% | Layout, frame assembly, key handling and range selection are covered. The per-tab data-population functions are not. |
+| `cmd/maz-term` coverage 0% | Wiring only; exercised end-to-end rather than by unit tests. |
+| Alert thresholds | `expected_status` and `timeout` are enforced; `AlertConfig` thresholds from the PRD are not evaluated. |
+| Command palette | Not implemented (PRD §2.1). |
+| Metric comparison view | Not implemented. Earlier documents claimed it complete; only a mode flag existed. |
+| Per-endpoint intervals | Parsed and validated, but every collector shares `general.refresh`. |
 
-3. **Missing Components**:
-   - Plugin system for extensibility
-   - Secure credential handling
-   - Cloud/Kubernetes/CI integrations
-   - Advanced notification system
+## Corrections to earlier claims
 
-## Recent Achievements
+Earlier revisions of this file marked the following complete. They were not, and
+are now either implemented or listed above as gaps:
 
-1. **Metric Comparison Views**:
-   - Implemented comparison mode for correlating different metrics on a single chart
-   - Added the ability to select a primary metric and multiple comparison metrics
-   - Created intuitive keyboard controls for manipulating comparison selections
-   - Implemented color-coding for different metric types
-   - Added comparison status indicators in the UI
-   - Developed flexible metric data normalization for meaningful comparisons
-
-2. **Interactive Zoom Functionality**:
-   - Implemented zoom mode for investigating specific time periods in detail
-   - Added visual selection of zoom regions with adjustable size and position
-   - Created intuitive keyboard controls for manipulating the zoom window
-   - Added zoom status indicators in chart titles and status bar
-   - Implemented zoom reset functionality to return to standard views
-   - Enhanced time display for zoomed timeframes
-
-3. **Event Annotations for Historical Data**:
-   - Implemented event annotations to mark significant events on time-series charts
-   - Added the ability to toggle annotations on/off with the 'a' key
-   - Created an annotation form UI for adding new events
-   - Defined a comprehensive event model with types, severities, and tags
-   - Added color-coded event indicators on metric charts
-   - Integrated annotation count display in chart titles
-
-4. **Time Range Selection for Historical Data**:
-   - Implemented selectable time ranges (1h, 6h, 12h, 24h, 3d, 7d) for history visualization
-   - Added intuitive keyboard shortcuts ([/] keys) to change time ranges
-   - Created a visual time range selector with highlighting for current selection
-   - Updated plot titles to reflect the currently selected time range
-   - Improved formatting of time durations in the UI
-
-5. **Data Export Functionality**:
-   - Implemented CSV export for all metrics data
-   - Added export keyboard shortcut ('e')
-   - Created timestamp-based file naming
-   - Added user-friendly status updates during export process
-
-6. **History Tab Improvements**:
-   - Fixed rendering issues with historical data visualization
-   - Implemented robust plotting with proper error handling
-   - Ensured proper initialization of history charts
-   - Added fallback defaults for empty data scenarios
-
-7. **Configuration Enhancements**:
-   - Added support for human-friendly duration formats (e.g., "7d" for 7 days)
-   - Fixed configuration parsing issues
-   - Improved error handling for configuration loading
-
-8. **UI Enhancements**:
-   - Consistent styling with cyan borders and improved colors
-   - Better status bar with helpful information
-   - Improved help documentation and keyboard shortcuts
-
-## Next Steps (Priority Order)
-
-1. **Improve Data Visualization** (✅ Completed):
-   - ✅ Implement data filtering and date range selection
-   - ✅ Add annotations for significant events
-   - ✅ Implement zoom functionality for more detailed views
-   - ✅ Add comparison views for different metrics
-
-2. **Add Advanced Features**:
-   - Create plugin architecture for extensibility
-   - Add notification system for alerts
-   - Implement dashboard presets for different use cases
-
-3. **Cloud and Container Integration**:
-   - Implement cloud provider integrations (AWS, GCP, Azure)
-   - Add Kubernetes monitoring
-   - Integrate with CI/CD systems
-
-4. **Security and Polish**:
-   - Implement secure credential storage
-   - Add environment-based secrets support
-   - Performance optimization
-   - Cross-platform testing
-   - Packaging and distribution improvements 
+- "Historical data visualization" — nothing was persisted and the database was
+  not durable; the History tab showed 800 seeded synthetic rows.
+- "Data export functionality (CSV)" — the key handler reported "not yet
+  implemented" while an exporter sat unused in the storage adapter.
+- "Time range selection" — the keys moved an index without changing the window.
+- "Event annotations storage" — add and delete were empty functions returning
+  nil, and reads returned three hardcoded events.
+- "Process table" — displayed one invented row; the model had no process field.
+- "Notification filtering" — selections were discarded on every keystroke.
+- "Interactive zoom" / "metric comparison" — state flags with no effect on any
+  query. Zoom now narrows the window; comparison remains unimplemented.
+- Colour coding — emitted another library's markup, which rendered as literal
+  text.

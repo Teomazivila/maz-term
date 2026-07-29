@@ -44,9 +44,14 @@ A terminal-based dashboard that aggregates key DevOps metrics, alerts, and tasks
 
 ### 3.1 Architecture
 - Core engine written in Go for performance
-- Terminal UI using TermUI libraries
-- Plugin system for extensibility
-- Local SQLite database for caching and historical data
+- Terminal UI using TermUI. BubbleTea was evaluated first and removed in
+  d364dee; TermUI's built-in gauges, sparklines and charts fit a dashboard
+  better and it is the only implementation.
+- Plugin system for extensibility. Go plugins require cgo and have no Windows
+  support, so loading is opt-in at build time (`-tags plugins`) and the default
+  binary stays portable.
+- Local SQLite database for caching and historical data, via a pure-Go driver so
+  the binary needs no cgo.
 - RESTful API clients for service integrations
 
 ### 3.2 Integrations

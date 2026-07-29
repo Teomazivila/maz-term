@@ -115,12 +115,13 @@
 ## Development Approach
 
 #### Tools & Libraries
-- Go 1.21+
-- UI: BubbleTea/Lipgloss
-- Data storage: SQLite
+- Go 1.26+
+- UI: TermUI (BubbleTea was removed in d364dee)
+- Data storage: SQLite via modernc.org/sqlite (pure Go, no cgo)
+- System metrics: gopsutil v4
 - Configuration: Viper
-- Testing: Testify
-- Build: Make
+- Testing: Testify, race detector, golangci-lint
+- Build: Make, GitHub Actions
 
 #### Implementation Strategy
 - Component-based architecture with clear separation of concerns
