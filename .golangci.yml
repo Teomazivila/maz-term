@@ -1,0 +1,98 @@
+version: "2"
+
+run:
+  timeout: 5m
+  # Tagged files must be linted too, or the plugin loader is never checked.
+  build-tags:
+    - plugins
+
+linters:
+  enable:
+    # Correctness
+    - errcheck        # unchecked errors: the defect class that hid the storage failures
+    - govet
+    - staticcheck
+    - ineffassign
+    - unused
+    - bodyclose       # unclosed HTTP response bodies
+    - contextcheck    # functions that should accept a context
+    - nilerr          # returning nil after a non-nil error
+    - rowserrcheck    # unchecked sql.Rows.Err
+    - sqlclosecheck   # unclosed sql.Rows / sql.Stmt
+    - errorlint       # %w and errors.Is/As misuse
+    - copyloopvar
+    - durationcheck
+    - makezero
+    - reassign
+
+    # Security
+    - gosec
+
+    # Style and clarity
+    - revive
+    - misspell
+    - unconvert
+    - unparam
+    - wastedassign
+    - whitespace
+    - predeclared
+    - usestdlibvars
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+
+    govet:
+      enable-all: true
+      disable:
+        # Field alignment is noise for configuration structs read once at startup.
+        - fieldalignment
+
+    gosec:
+      excludes:
+        # File paths come from the operator's own configuration, and the plugin
+        # loader performs its own containment and digest checks.
+        - G304
+        # Subprocesses are git and the platform URL opener, both with validated
+        # arguments and no shell.
+        - G204
+
+    revive:
+      rules:
+        - name: exported
+          arguments:
+            - disableStutteringCheck
+        - name: package-comments
+        - name: error-strings
+        - name: error-return
+        - name: context-as-argument
+        - name: indent-error-flow
+        - name: unreachable-code
+        - name: redefines-builtin-id
+
+    staticcheck:
+      checks:
+        - all
+
+  exclusions:
+    rules:
+      # Tests may ignore errors in setup helpers and use long literal fixtures.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - unparam
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/Teomazivila/maz-term
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

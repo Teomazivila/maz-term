@@ -1,0 +1,139 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26.5"
+
+jobs:
+  build-and-test:
+    name: build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # The whole module must build, including the plugin-tagged files. A main
+      # package without a main function once broke `go build ./...` while
+      # `make build` still passed, so the failure went unnoticed.
+      - name: Build
+        run: go build ./...
+
+      - name: Build with plugin support
+        run: CGO_ENABLED=1 go build -tags plugins ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l $(git ls-files '*.go'))"
+          if [ -n "$unformatted" ]; then
+            echo "::error::unformatted files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Test with race detector and coverage
+        run: go test -race -timeout 300s -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Coverage summary
+        run: go tool cover -func=coverage.out | tail -20
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+  vulnerabilities:
+    name: vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  cross-compile:
+    name: cross-compile ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # Guards the distribution promise: the SQLite driver is pure Go, so every
+      # target must link with cgo disabled. The previous driver required cgo and
+      # these binaries failed at runtime with `unknown driver "sqlite3"`.
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -trimpath -o /dev/null ./cmd/maz-term
+
+  no-ai-attribution:
+    name: reject AI attribution in commits
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan commit messages
+        run: |
+          range="origin/${{ github.base_ref }}..HEAD"
+          if git log --format='%B%n%(trailers)' "$range" |
+             grep -iEq "(co-authored-by:.*(claude|copilot|cursor|chatgpt|gemini)|(generated|written|assisted|produced) by.*(ai|claude|copilot|cursor|chatgpt|gemini))"; then
+            echo "::error::AI attribution found in commit messages. Remove it before merging."
+            exit 1
+          fi
+          echo "no AI attribution found"
