@@ -6,16 +6,15 @@
 >
 > | Severity | Found | Fixed | Outstanding |
 > |---|---|---|---|
-> | 🔴 Critical | 10 | 9 | 1 (C-009) |
+> | 🔴 Critical | 10 | 10 | 0 |
 > | 🟠 High | 20 | 20 | 0 |
 > | 🟡 Medium | 26 | 26 | 0 |
 > | 🟢 Low | 8 | 8 | 0 |
 >
-> **Outstanding: C-009.** The simulated cloud, Kubernetes and CI/CD collectors
-> were removed, so nothing fabricates infrastructure state any more. Real
-> SDK-backed replacements were requested and are **not yet written**; the
-> configuration keys are parsed and validated but unread, and the three tabs are
-> gone. See "Remaining work" below.
+> **All findings addressed.** C-009 closed last: the simulated collectors are
+> replaced by real ones against the AWS, Kubernetes and GitHub Actions APIs, each
+> read-only, off by default, and reporting the reason when a provider cannot be
+> reached. See docs/adr/0001-infrastructure-integrations.md.
 >
 > Six further defects were found during remediation that this report did not
 > record, each now fixed and covered by a test:
@@ -44,17 +43,18 @@
 > cgo-free; and the binary was run against a real pty, recording real CPU, memory,
 > disk, HTTP and Git samples with zero fabricated rows and no warnings.
 >
-> ### Remaining work
+> ### Remaining work (beyond the review's scope)
 >
-> 1. **C-009 real integrations.** AWS (EC2/S3/RDS/CloudWatch via aws-sdk-go-v2),
->    Kubernetes (pods/deployments/nodes via client-go) and GitHub Actions
->    (workflow runs via go-github). Each needs a collector, a storage schema, a UI
->    tab and tests. The configuration structs, credential handling and validation
->    are already in place.
-> 2. **UI coverage** is 41.8%. Frame assembly, layout, key handling and the range
->    selector are covered; the per-tab data-population functions are not.
-> 3. **Alert thresholds** from PRD §2.2 are parsed but not evaluated.
-> 4. **Command palette** (PRD §2.1) and the metric comparison view are not built.
+> These are unbuilt features rather than defects; see progress.md "Known gaps".
+>
+> 1. **UI coverage** is 39.0%. Frame assembly, layout, key handling, the range
+>    selector and the provider tabs are covered; the per-tab data-population
+>    functions are not.
+> 2. **Alert thresholds** from PRD §2.2 are parsed but not evaluated.
+> 3. **Command palette** (PRD §2.1) and the metric comparison view are not built.
+> 4. **Per-resource infrastructure history.** Only aggregates are persisted for
+>    the three providers; per-instance or per-pod series would need a schema
+>    change (ADR-0001).
 
 ---
 

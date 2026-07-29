@@ -206,12 +206,14 @@ make vuln         # govulncheck
 
 ```
 cmd/maz-term        entry point, flags, wiring, shutdown
-pkg/collector       system, HTTP and Git collectors on a shared lifecycle
+pkg/collector       system, HTTP, Git, AWS, Kubernetes and GitHub Actions
+                    collectors, all on one lifecycle with bounded goroutines
 pkg/config          configuration loading, validation, environment overrides
 pkg/models          shared metric and notification types
 pkg/plugins         plugin manager, with the loader behind a build tag
 pkg/ui              termui rendering, layout, event handling
 internal/storage    SQLite persistence, retention, CSV export
+docs/adr            architecture decision records
 ```
 
 Collectors publish to subscribers and persist through a typed storage interface.
