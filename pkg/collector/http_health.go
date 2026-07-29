@@ -182,6 +182,8 @@ func (c *HTTPHealthChecker) checkEndpoint(ctx context.Context, endpoint models.E
 		return metric
 	}
 
+	// Header names arrive lowercased from the configuration loader; Add
+	// canonicalises them, so the wire format is correct either way.
 	for key, value := range endpoint.Headers {
 		req.Header.Add(key, value)
 	}

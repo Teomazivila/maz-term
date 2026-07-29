@@ -52,6 +52,9 @@ endpoints: []
 #     expected_status: 200
 #     timeout: 5s
 #     headers:
+#       # Header names are lowercased when the file is read and canonicalised
+#       # when the request is sent, so X-Health-Probe and x-health-probe are
+#       # equivalent. Values are preserved exactly.
 #       X-Health-Probe: "maz-term"
 
 git:

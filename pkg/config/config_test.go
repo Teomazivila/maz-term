@@ -416,3 +416,55 @@ func TestEndpointsFromFileReplaceDefaults(t *testing.T) {
 	require.Len(t, cfg.Endpoints, 1)
 	assert.Equal(t, "https://one.example", cfg.Endpoints[0].URL)
 }
+
+// TestEndpointFullyPopulatedFromFile pins every documented endpoint key.
+//
+// models.EndpointConfig originally carried only json tags. mapstructure matches
+// field names case-insensitively but does not convert snake_case, so
+// expected_status silently never reached ExpectedStatus, and once unknown keys
+// became an error the documented example stopped loading at all.
+func TestEndpointFullyPopulatedFromFile(t *testing.T) {
+	path := writeConfig(t, `
+endpoints:
+  - name: "API gateway"
+    url: "https://api.example.com/health"
+    method: POST
+    expected_status: 204
+    timeout: 5s
+    interval: 30s
+    headers:
+      X-Probe: "maz-term"
+`)
+
+	cfg, err := LoadConfig(path)
+	require.NoError(t, err)
+	require.Len(t, cfg.Endpoints, 1)
+
+	endpoint := cfg.Endpoints[0]
+	assert.Equal(t, "API gateway", endpoint.Name)
+	assert.Equal(t, "https://api.example.com/health", endpoint.URL)
+	assert.Equal(t, "POST", endpoint.Method)
+	assert.Equal(t, 204, endpoint.ExpectedStatus, "expected_status must reach the field")
+	assert.Equal(t, 5*time.Second, endpoint.Timeout)
+	assert.Equal(t, 30*time.Second, endpoint.Interval)
+	// Viper lowercases map keys while preserving values. That is harmless for
+	// HTTP, whose header names are case-insensitive and which Go canonicalises
+	// when the request is built, but it is asserted here so the behaviour is
+	// documented rather than discovered.
+	assert.Equal(t, "maz-term", endpoint.Headers["x-probe"])
+	assert.NotContains(t, endpoint.Headers, "X-Probe")
+}
+
+// TestShippedExampleConfigLoads guards against the documented example drifting
+// out of step with the schema, which is how the expected_status defect hid: the
+// line was commented out in the example, so nothing exercised it.
+func TestShippedExampleConfigLoads(t *testing.T) {
+	path := filepath.Join("..", "..", "config.example.yaml")
+	if _, err := os.Stat(path); err != nil {
+		t.Skip("example config not present")
+	}
+
+	cfg, err := LoadConfig(path)
+	require.NoError(t, err, "config.example.yaml must load with the current schema")
+	assert.NotNil(t, cfg)
+}
