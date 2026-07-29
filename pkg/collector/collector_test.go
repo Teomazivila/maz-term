@@ -192,6 +192,10 @@ func TestSystemCollectorPersistsAndPublishes(t *testing.T) {
 func TestSystemCollectorReportsRealProcesses(t *testing.T) {
 	c := NewSystemMetricsCollector()
 
+	// The sweep runs on its own cadence, so it is driven directly here rather
+	// than waiting for the sampler's interval.
+	c.sampleProcesses(context.Background())
+
 	_, err := c.Collect(context.Background())
 	require.NoError(t, err)
 
@@ -212,6 +216,47 @@ func TestSystemCollectorReportsRealProcesses(t *testing.T) {
 }
 
 // TestStoreFailureDoesNotBreakCollection covers the logged-not-swallowed path.
+// TestSystemCollectRemainsFastWithoutAProcessSample pins the fix for process
+// enumeration blocking the whole cycle: CPU, memory, disk and network must be
+// recorded even before the first process sweep completes.
+func TestSystemCollectRemainsFastWithoutAProcessSample(t *testing.T) {
+	store := &recordingStore{}
+	c := NewSystemMetricsCollector()
+	c.SetStorageProvider(store)
+
+	start := time.Now()
+	_, err := c.Collect(context.Background())
+	require.NoError(t, err)
+	elapsed := time.Since(start)
+
+	// Enumerating processes takes seconds on a busy machine; the fast path must
+	// not wait for it.
+	assert.Less(t, elapsed, 2*time.Second,
+		"a collection cycle must not block on process enumeration")
+
+	system, _, _ := store.counts()
+	assert.Equal(t, 1, system, "the sample must be recorded even with no process data yet")
+
+	metrics := c.GetLatestMetrics()
+	assert.NotEmpty(t, metrics.Disk.Filesystems)
+	assert.Empty(t, metrics.Processes, "the process table is empty until the sampler runs")
+}
+
+// TestProcessSamplerStopsWithTheCollector ensures the extra goroutine is owned.
+func TestProcessSamplerStopsWithTheCollector(t *testing.T) {
+	c := NewSystemMetricsCollector()
+
+	require.NoError(t, c.Start(context.Background(), 50*time.Millisecond))
+	time.Sleep(20 * time.Millisecond)
+	require.NoError(t, c.Stop())
+
+	select {
+	case <-c.procDone:
+	default:
+		t.Fatal("the process sampler goroutine outlived Stop")
+	}
+}
+
 func TestStoreFailureDoesNotBreakCollection(t *testing.T) {
 	store := &recordingStore{fail: true}
 	c := NewSystemMetricsCollector()
