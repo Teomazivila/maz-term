@@ -110,6 +110,15 @@ type GitRepoMetrics struct {
 	ChangedFiles   []GitChange  `json:"changed_files"`
 	CommitHistory  []CommitInfo `json:"commit_history"`
 
+	// Remote and RemoteURL come from the repository's own configuration, so the
+	// operator's git config, SSH agent and credential helpers are what apply.
+	Remote    string `json:"remote"`
+	RemoteURL string `json:"remote_url"`
+
+	// HasUpstream reports whether the current branch tracks a remote branch.
+	// Without one, PendingCommits cannot be computed.
+	HasUpstream bool `json:"has_upstream"`
+
 	// IsRepository reports whether Path is a Git work tree. Error holds the
 	// reason collection failed, so the UI can say so instead of displaying
 	// zeroes that look like a clean repository.

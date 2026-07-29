@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -69,8 +68,9 @@ type KubernetesCollector struct {
 
 	config KubernetesConfig
 
-	mu      sync.RWMutex
-	metrics models.KubernetesMetrics
+	mu       sync.RWMutex
+	metrics  models.KubernetesMetrics
+	identity KubernetesIdentity
 
 	// clientsFor builds the API clients. It is a field so tests can substitute a
 	// fake clientset without reaching a cluster.
@@ -91,44 +91,68 @@ func NewKubernetesCollector(cfg KubernetesConfig) *KubernetesCollector {
 	return c
 }
 
+// KubernetesIdentity describes which local credentials were resolved, so an
+// operator can confirm the dashboard is pointed where they expect.
+type KubernetesIdentity struct {
+	// Source names where the credentials came from, for example the kubeconfig
+	// files that were merged, or "in-cluster service account".
+	Source string
+
+	Context string
+	Cluster string
+	User    string
+	Server  string
+}
+
+// loadingRules returns the kubeconfig discovery rules.
+//
+// The defaults are used as-is unless a path is configured explicitly. They
+// already cover $KUBECONFIG, including its colon-separated multi-file merge, and
+// ~/.kube/config, in kubectl's own precedence order. Setting ExplicitPath
+// restricts loading to a single file, so doing that as a "helpful" fallback
+// silently discarded any merge the operator had set up.
+func (c KubernetesConfig) loadingRules() *clientcmd.ClientConfigLoadingRules {
+	rules := clientcmd.NewDefaultClientConfigLoadingRules()
+	if c.ConfigPath != "" {
+		rules.ExplicitPath = c.ConfigPath
+	}
+	return rules
+}
+
 // newClients resolves credentials and builds the clientsets.
 //
-// Resolution order matches kubectl: an explicit path, then $KUBECONFIG, then
-// ~/.kube/config, then in-cluster. Delegating to clientcmd is what makes exec
-// credential plugins work, which is how EKS, GKE and AKS authenticate.
+// Resolution order matches kubectl: an explicitly configured file, then
+// $KUBECONFIG, then ~/.kube/config, then the in-cluster service account.
+// Delegating to clientcmd is what makes exec credential plugins work, which is
+// how EKS, GKE and AKS authenticate locally.
 func (c *KubernetesCollector) newClients() (kubernetes.Interface, metricsv.Interface, string, error) {
-	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
-	if c.config.ConfigPath != "" {
-		loadingRules.ExplicitPath = c.config.ConfigPath
-	} else if _, ok := os.LookupEnv("KUBECONFIG"); !ok {
-		if home, err := os.UserHomeDir(); err == nil {
-			candidate := filepath.Join(home, ".kube", "config")
-			if _, err := os.Stat(candidate); err == nil {
-				loadingRules.ExplicitPath = candidate
-			}
-		}
-	}
+	rules := c.config.loadingRules()
 
 	overrides := &clientcmd.ConfigOverrides{}
 	if c.config.Context != "" {
 		overrides.CurrentContext = c.config.Context
 	}
 
-	clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, overrides)
+	clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, overrides)
+
+	identity := KubernetesIdentity{Source: describeKubeconfigSource(rules)}
 
 	restConfig, err := clientConfig.ClientConfig()
 	if err != nil {
-		// Fall back to in-cluster credentials, which is the normal case when
-		// maz-term runs inside a pod and no kubeconfig exists.
+		// In-cluster credentials are the normal case when maz-term runs inside a
+		// pod and no kubeconfig exists.
 		inCluster, inClusterErr := rest.InClusterConfig()
 		if inClusterErr != nil {
-			return nil, nil, "", fmt.Errorf("no usable Kubernetes credentials: %w", err)
+			return nil, nil, "", fmt.Errorf(
+				"no usable Kubernetes credentials (tried %s): %w", identity.Source, err)
 		}
 		restConfig = inCluster
+		identity = KubernetesIdentity{Source: "in-cluster service account"}
 	}
 
 	// Without a timeout a wedged API server would hang a collection cycle.
 	restConfig.Timeout = k8sCollectTimeout
+	identity.Server = restConfig.Host
 
 	clientset, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
@@ -143,15 +167,66 @@ func (c *KubernetesCollector) newClients() (kubernetes.Interface, metricsv.Inter
 
 	clusterName := restConfig.Host
 	if raw, err := clientConfig.RawConfig(); err == nil {
-		if name := raw.CurrentContext; name != "" {
-			clusterName = name
-		}
+		identity.Context = raw.CurrentContext
 		if c.config.Context != "" {
-			clusterName = c.config.Context
+			identity.Context = c.config.Context
+		}
+		if ctx, ok := raw.Contexts[identity.Context]; ok && ctx != nil {
+			identity.Cluster = ctx.Cluster
+			identity.User = ctx.AuthInfo
+		}
+		if identity.Context != "" {
+			clusterName = identity.Context
 		}
 	}
 
+	c.mu.Lock()
+	c.identity = identity
+	c.mu.Unlock()
+
 	return clientset, metricsClient, clusterName, nil
+}
+
+// describeKubeconfigSource names the files clientcmd will consult.
+func describeKubeconfigSource(rules *clientcmd.ClientConfigLoadingRules) string {
+	if rules.ExplicitPath != "" {
+		return rules.ExplicitPath
+	}
+
+	existing := make([]string, 0, len(rules.Precedence))
+	for _, path := range rules.Precedence {
+		if _, err := os.Stat(path); err == nil {
+			existing = append(existing, path)
+		}
+	}
+
+	if len(existing) == 0 {
+		return "no kubeconfig found"
+	}
+	return strings.Join(existing, ", ")
+}
+
+// Identity reports the resolved credentials, for the UI and the -check report.
+func (c *KubernetesCollector) Identity() KubernetesIdentity {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.identity
+}
+
+// CheckAccess resolves credentials and queries the server version, proving the
+// cluster is genuinely reachable with what was found locally.
+func (c *KubernetesCollector) CheckAccess(ctx context.Context) (KubernetesIdentity, string, error) {
+	clientset, _, _, err := c.clientsFor()
+	if err != nil {
+		return c.Identity(), "", err
+	}
+
+	version, err := clientset.Discovery().ServerVersion()
+	if err != nil {
+		return c.Identity(), "", fmt.Errorf("reaching the API server: %w", err)
+	}
+
+	return c.Identity(), version.GitVersion, nil
 }
 
 // Collect gathers cluster state.

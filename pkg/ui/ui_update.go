@@ -368,10 +368,20 @@ func (a *App) updateGitTabData() {
 				lastCommit = FormatTime(metrics.LastCommit)
 			}
 
+			// Unpushed commits are only meaningful with an upstream, and only as
+			// of the last fetch, so the absence of one is stated rather than
+			// rendered as a zero.
+			unpushed := fmt.Sprintf("%d", metrics.PendingCommits)
+			if !metrics.HasUpstream {
+				unpushed = "no upstream"
+			}
+
 			panel.Text = fmt.Sprintf(
-				"%s\n  path      %s\n  branch    %s\n  commits   %d\n  modified  %d\n  untracked %d\n  unpushed  %d\n  last      %s",
-				metrics.Name, metrics.Path, metrics.Branch, metrics.CommitCount,
-				metrics.ModifiedFiles, metrics.UntrackedFiles, metrics.PendingCommits, lastCommit)
+				"%s\n  path      %s\n  branch    %s\n  remote    %s\n  commits   %d\n  modified  %d\n  untracked %d\n  unpushed  %s\n  last      %s",
+				metrics.Name, metrics.Path, metrics.Branch,
+				gitRemoteLabel(metrics.Remote, metrics.RemoteURL),
+				metrics.CommitCount, metrics.ModifiedFiles, metrics.UntrackedFiles,
+				unpushed, lastCommit)
 
 			if metrics.Error != "" {
 				panel.Text += "\n\npartial data: " + metrics.Error
@@ -681,6 +691,18 @@ func formatResponseTime(metric models.EndpointMetrics) string {
 		return "-"
 	}
 	return metric.ResponseTime.Round(time.Millisecond).String()
+}
+
+// gitRemoteLabel renders the configured remote and its URL.
+func gitRemoteLabel(remote, url string) string {
+	switch {
+	case remote == "" && url == "":
+		return "none"
+	case url == "":
+		return remote + " (not configured)"
+	default:
+		return remote + " " + url
+	}
 }
 
 func onOff(v bool) string {

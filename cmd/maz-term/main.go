@@ -32,6 +32,7 @@ func run() int {
 	dataPath := flag.String("data-path", "", "path to the metrics database (default <user-dir>/data.db)")
 	logPath := flag.String("log-file", "", "path to the log file (default <user-dir>/maz-term.log)")
 	versionFlag := flag.Bool("version", false, "print version information and exit")
+	checkFlag := flag.Bool("check", false, "report what resolved from the local environment, then exit")
 	noStorage := flag.Bool("no-storage", false, "run without persisting metrics history")
 	debug := flag.Bool("debug", false, "enable debug logging")
 	flag.Parse()
@@ -39,6 +40,17 @@ func run() int {
 	if *versionFlag {
 		fmt.Println("maz-term " + Version)
 		return 0
+	}
+
+	// -check runs before the log file is opened and before the terminal is
+	// claimed, so its report goes to stdout where it can be read and piped.
+	if *checkFlag {
+		cfg, err := config.LoadConfig(*configPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "maz-term: %v\n", err)
+			return 1
+		}
+		return runCheck(checkOutput, cfg)
 	}
 
 	// The dashboard owns the terminal for its whole lifetime, so logs must

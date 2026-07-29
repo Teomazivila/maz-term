@@ -378,7 +378,7 @@ func TestSummariseWorkflows(t *testing.T) {
 
 func TestGitHubRespectsCancellation(t *testing.T) {
 	server := githubServer(t, func(w http.ResponseWriter, _ *http.Request) {
-		time.Sleep(2 * time.Second)
+		time.Sleep(500 * time.Millisecond)
 		fmt.Fprint(w, `{"total_count":0,"workflows":[]}`)
 	})
 

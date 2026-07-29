@@ -3,6 +3,8 @@ package collector
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -310,3 +312,61 @@ func toRuntimeObjects(objects []any) []runtime.Object {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// TestKubeconfigLoadingRulesKeepDefaultPrecedence pins the fix for a regression I
+// introduced: setting ExplicitPath to ~/.kube/config as a "helpful" fallback
+// restricts loading to that single file and silently discards the $KUBECONFIG
+// multi-file merge that clientcmd's defaults already handle.
+func TestKubeconfigLoadingRulesKeepDefaultPrecedence(t *testing.T) {
+	t.Setenv("KUBECONFIG", "/tmp/a.yaml:/tmp/b.yaml")
+
+	rules := KubernetesConfig{}.loadingRules()
+
+	assert.Empty(t, rules.ExplicitPath,
+		"an unconfigured path must leave clientcmd's own precedence intact")
+	assert.Contains(t, rules.Precedence, "/tmp/a.yaml")
+	assert.Contains(t, rules.Precedence, "/tmp/b.yaml",
+		"every file in KUBECONFIG must remain in the precedence chain")
+}
+
+func TestKubeconfigExplicitPathIsHonoured(t *testing.T) {
+	rules := KubernetesConfig{ConfigPath: "/custom/kubeconfig"}.loadingRules()
+
+	assert.Equal(t, "/custom/kubeconfig", rules.ExplicitPath)
+}
+
+func TestDescribeKubeconfigSource(t *testing.T) {
+	dir := t.TempDir()
+	present := filepath.Join(dir, "present.yaml")
+	require.NoError(t, os.WriteFile(present, []byte("apiVersion: v1\n"), 0o600))
+
+	t.Setenv("KUBECONFIG", present+string(os.PathListSeparator)+filepath.Join(dir, "absent.yaml"))
+
+	source := describeKubeconfigSource(KubernetesConfig{}.loadingRules())
+	assert.Contains(t, source, "present.yaml")
+	assert.NotContains(t, source, "absent.yaml", "only files that exist are named")
+
+	explicit := describeKubeconfigSource(KubernetesConfig{ConfigPath: "/x/y"}.loadingRules())
+	assert.Equal(t, "/x/y", explicit)
+}
+
+func TestDescribeKubeconfigSourceWithNothingPresent(t *testing.T) {
+	t.Setenv("KUBECONFIG", filepath.Join(t.TempDir(), "absent.yaml"))
+	t.Setenv("HOME", t.TempDir())
+
+	assert.Equal(t, "no kubeconfig found",
+		describeKubeconfigSource(KubernetesConfig{}.loadingRules()))
+}
+
+// TestKubernetesCredentialFailureNamesWhatWasTried keeps the error actionable.
+func TestKubernetesCredentialFailureNamesWhatWasTried(t *testing.T) {
+	t.Setenv("KUBECONFIG", filepath.Join(t.TempDir(), "absent.yaml"))
+	t.Setenv("HOME", t.TempDir())
+
+	c := NewKubernetesCollector(KubernetesConfig{})
+
+	_, _, _, err := c.newClients()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no usable Kubernetes credentials")
+	assert.Contains(t, err.Error(), "tried")
+}

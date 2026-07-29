@@ -50,6 +50,17 @@ func (a *App) updateCloudTabData() {
 
 	if len(tab.Panels) > 0 {
 		var b strings.Builder
+
+		// Which local credentials resolved, so the operator can confirm at a
+		// glance that the dashboard is pointed at the account they expect.
+		identity := a.CloudCollector.Identity()
+		if identity.Profile != "" {
+			fmt.Fprintf(&b, "profile   %s\n", identity.Profile)
+		}
+		if identity.Source != "" {
+			fmt.Fprintf(&b, "creds     %s\n", TruncateString(identity.Source, 48))
+		}
+
 		fmt.Fprintf(&b, "regions   %s\n", strings.Join(metrics.Regions, ", "))
 		fmt.Fprintf(&b, "instances %d (%s)\n", len(metrics.InstanceMetrics),
 			countByStatus(metrics.InstanceMetrics))
@@ -188,6 +199,17 @@ func (a *App) updateKubernetesTabData() {
 			cluster = "unknown"
 		}
 		fmt.Fprintf(&b, "cluster     %s\n", cluster)
+
+		identity := a.KubernetesCollector.Identity()
+		if identity.User != "" {
+			fmt.Fprintf(&b, "user        %s\n", TruncateString(identity.User, 40))
+		}
+		if identity.Server != "" {
+			fmt.Fprintf(&b, "server      %s\n", TruncateString(identity.Server, 40))
+		}
+		if identity.Source != "" {
+			fmt.Fprintf(&b, "kubeconfig  %s\n", TruncateString(identity.Source, 40))
+		}
 		fmt.Fprintf(&b, "nodes       %d ready of %d\n", summary.NodesReady, summary.NodesTotal)
 		fmt.Fprintf(&b, "pods        %d running, %d pending, %d failed\n",
 			summary.PodsRunning, summary.PodsPending, summary.PodsFailed)

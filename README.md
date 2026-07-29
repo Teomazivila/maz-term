@@ -101,11 +101,64 @@ MAZTERM_GENERAL_REFRESH=30s ./maz-term
 Unknown keys are an error, so a typo is reported at startup rather than silently
 ignored. See `config.example.yaml` for every option.
 
-### Credentials
+### Local credentials
 
-Credentials are never read from the configuration file, and a file containing
-`access_key_id`, `secret_access_key` or `token` is rejected at startup. Use the
-environment or the platform's own credential chain.
+maz-term reuses whatever credentials you already have on the machine. There is
+nothing to copy into its configuration, and a file containing `access_key_id`,
+`secret_access_key` or `token` is rejected at startup.
+
+| Provider | Resolved from | Minimum configuration |
+|---|---|---|
+| **AWS** | The standard credential chain: `AWS_*` variables, `~/.aws/credentials`, `~/.aws/config` (including SSO), then instance metadata. The region comes from `AWS_REGION`, `AWS_DEFAULT_REGION` or your profile. | `cloud: {enabled: ["aws"]}` |
+| **Kubernetes** | The same resolution as kubectl: `$KUBECONFIG` (multi-file merge included), then `~/.kube/config`, then the in-cluster service account. `exec` credential plugins work, so EKS, GKE and AKS authenticate normally. | `kubernetes: {enabled: true}` |
+| **Git** | Your own `git` installation, so your `.gitconfig`, SSH agent and credential helpers apply. No network call is made; unpushed commits are counted against the last fetch. | `git: {repositories: [{path: "."}]}` |
+| **GitHub** | `MAZTERM_GITHUB_TOKEN`, then `GITHUB_TOKEN`. With the `gh` CLI: `export GITHUB_TOKEN=$(gh auth token)` | `cicd: {enabled: ["github"], github: {owner: …, repositories: […]}}` |
+
+Selecting a specific AWS profile or Kubernetes context is optional:
+
+```yaml
+cloud:
+  enabled: ["aws"]
+  aws:
+    profile: "staging"      # or AWS_PROFILE; omit for the default chain
+    region: "eu-west-1"     # omit to take the profile's own region
+
+kubernetes:
+  enabled: true
+  context: "minikube"       # omit for the current context
+  config_path: ""           # omit for $KUBECONFIG then ~/.kube/config
+```
+
+### Checking what resolved
+
+`-check` reports what each source resolved to and whether it actually works, then
+exits. It never starts the dashboard, so the output is readable and pipeable:
+
+```console
+$ maz-term -check
+maz-term configuration check
+
+Local
+  [ok]      system       cpu 7.6%, memory 77.3%, 10 filesystems
+  [ok]      git          /home/me/src/maz-term on main, 38 commits, origin -> git@github.com:me/maz-term.git
+  [off]     endpoints    none configured
+
+Providers
+  [ok]      aws          account 123456789012 in eu-west-1
+                          profile staging, credentials from SSOProvider
+  [ok]      kubernetes   https://cluster.example (server v1.34.1)
+                          context prod, cluster prod, user me@example.com
+                          from /home/me/.kube/config
+  [FAILED]  github       github: no API token (set MAZTERM_GITHUB_TOKEN or GITHUB_TOKEN)
+                          If you use the gh CLI: export GITHUB_TOKEN=$(gh auth token)
+```
+
+It exits non-zero when a configured source is unusable, so it works in a
+pre-flight script. Every check is read-only: AWS calls `sts:GetCallerIdentity`
+(which needs no permissions), Kubernetes reads the server version, and Git only
+inspects the local repository. When AWS credentials fail it names the profiles
+found on the machine, and it distinguishes an expired SSO session — which needs
+`aws sso login` — from a configuration problem.
 
 ## Flags
 
@@ -116,6 +169,7 @@ environment or the platform's own credential chain.
 | `-log-file PATH` | log file (default `~/.config/maz-term/maz-term.log`) |
 | `-no-storage` | run without recording history |
 | `-debug` | debug-level logging |
+| `-check` | report what resolved from the local environment, then exit |
 | `-version` | print the version and exit |
 
 Logs always go to a file, never to the terminal: the dashboard owns the screen

@@ -57,6 +57,10 @@ endpoints: []
 git:
   repositories:
     # A leading ~ is expanded. "." means the working directory.
+    #
+    # Uses your own git installation, so your .gitconfig, SSH agent and
+    # credential helpers apply. No network call is made: unpushed commits are
+    # counted against the last fetch.
     - path: "."
       remote: origin
       branch: ""
@@ -82,32 +86,42 @@ plugins:
 
 # Cloud, Kubernetes and CI/CD monitoring are disabled by default.
 #
-# Credentials are never read from this file. AWS uses the standard credential
-# chain (AWS_* variables, a shared profile, or instance metadata) and GitHub
-# reads MAZTERM_GITHUB_TOKEN or GITHUB_TOKEN. Placing access_key_id,
+# All three reuse the credentials already on this machine, so enabling them is
+# usually the only configuration needed. Run `maz-term -check` to see what
+# resolved and whether it works.
+#
+# Credentials are never read from this file. Placing access_key_id,
 # secret_access_key or token here is rejected at startup.
 cloud:
-  enabled: []
+  enabled: []          # ["aws"] to enable
   refresh: 1m
   aws:
+    # Both optional. Region falls back to AWS_REGION, AWS_DEFAULT_REGION or the
+    # profile's own region; profile falls back to AWS_PROFILE then "default".
+    # Credentials come from the standard chain: environment, ~/.aws/credentials,
+    # ~/.aws/config (including SSO), then instance metadata.
     region: ""
     profile: ""
     additional_regions: []
     resources: ["ec2", "s3", "rds"]
 
 kubernetes:
-  enabled: false
+  enabled: false       # true to enable
   refresh: 30s
-  # Defaults to $KUBECONFIG then ~/.kube/config when empty.
+  # Both optional. Resolution matches kubectl: $KUBECONFIG (multi-file merge
+  # included), then ~/.kube/config, then the in-cluster service account. exec
+  # credential plugins work, so EKS, GKE and AKS authenticate normally.
   config_path: ""
   context: ""
   namespaces: ["default"]
   resources: ["pods", "deployments", "services", "nodes"]
 
 cicd:
-  enabled: []
+  enabled: []          # ["github"] to enable
   refresh: 2m
   github:
+    # The API token is read from MAZTERM_GITHUB_TOKEN or GITHUB_TOKEN.
+    # With the gh CLI: export GITHUB_TOKEN=$(gh auth token)
     owner: ""
     repositories: []
-    workflows: []
+    workflows: []      # empty means every workflow in the repository

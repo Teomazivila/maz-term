@@ -180,11 +180,12 @@ func (a *App) initCollectors(ctx context.Context) {
 	a.SystemCollector = collector.NewSystemMetricsCollector()
 	a.HTTPCollector = collector.NewHTTPHealthChecker(a.Config.Endpoints)
 
-	gitPath := ""
+	gitPath, gitRemote := "", ""
 	if len(a.Config.Git.Repositories) > 0 {
 		gitPath = a.Config.Git.Repositories[0].Path
+		gitRemote = a.Config.Git.Repositories[0].Remote
 	}
-	a.GitCollector = collector.NewGitStatusCollector(gitPath)
+	a.GitCollector = collector.NewGitStatusCollectorWithRemote(gitPath, gitRemote)
 
 	started := []collector.Collector{a.SystemCollector, a.HTTPCollector, a.GitCollector}
 	intervals := []time.Duration{interval, interval, interval}

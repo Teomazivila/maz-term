@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/rds"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
 
 const (
@@ -90,8 +92,10 @@ type AWSCollector struct {
 
 	config AWSConfig
 
-	mu      sync.RWMutex
-	metrics models.CloudProviderMetrics
+	mu             sync.RWMutex
+	metrics        models.CloudProviderMetrics
+	identity       AWSIdentity
+	resolvedRegion string
 
 	// clientsFor builds the per-region API clients. It is a field so tests can
 	// substitute fakes without reaching AWS.
@@ -139,14 +143,42 @@ func NewAWSCollector(cfg AWSConfig) *AWSCollector {
 	return c
 }
 
-// newClients builds real SDK clients for a region.
-func (c *AWSCollector) newClients(ctx context.Context, region string) (*awsClients, error) {
-	opts := []func(*awsconfig.LoadOptions) error{awsconfig.WithRegion(region)}
+// AWSIdentity describes which local credentials were resolved, so an operator can
+// confirm the dashboard is pointed at the account they expect.
+type AWSIdentity struct {
+	// Source names the credential provider the SDK chose, for example
+	// "SharedConfigCredentials: /home/me/.aws/credentials" or "SSOProvider".
+	Source string
+
+	Profile string
+	Region  string
+
+	// Account and ARN are only populated by CheckAccess, which calls STS.
+	Account string
+	ARN     string
+}
+
+// loadOptions returns the SDK load options for a region.
+//
+// A region is only pinned when one is configured. Otherwise the SDK resolves it
+// from AWS_REGION, AWS_DEFAULT_REGION or the shared profile, which is what makes
+// local usage work with no maz-term configuration beyond enabling the provider.
+func (c *AWSCollector) loadOptions(region string) []func(*awsconfig.LoadOptions) error {
+	var opts []func(*awsconfig.LoadOptions) error
+	if region != "" {
+		opts = append(opts, awsconfig.WithRegion(region))
+	}
+	// An empty profile leaves the SDK's own resolution intact, which honours
+	// AWS_PROFILE and falls back to "default".
 	if c.config.Profile != "" {
 		opts = append(opts, awsconfig.WithSharedConfigProfile(c.config.Profile))
 	}
+	return opts
+}
 
-	cfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
+// newClients builds real SDK clients for a region.
+func (c *AWSCollector) newClients(ctx context.Context, region string) (*awsClients, error) {
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, c.loadOptions(region)...)
 	if err != nil {
 		return nil, fmt.Errorf("loading AWS configuration for %s: %w", region, err)
 	}
@@ -159,6 +191,123 @@ func (c *AWSCollector) newClients(ctx context.Context, region string) (*awsClien
 	}, nil
 }
 
+// resolveRegions returns the regions to collect from.
+//
+// When none is configured it asks the SDK, which reads AWS_REGION,
+// AWS_DEFAULT_REGION and the shared profile. Requiring cloud.aws.region in
+// maz-term's own file duplicated a setting the operator already has locally.
+func (c *AWSCollector) resolveRegions(ctx context.Context) ([]string, error) {
+	if configured := c.config.regions(); len(configured) > 0 {
+		return configured, nil
+	}
+
+	c.mu.RLock()
+	cached := c.resolvedRegion
+	c.mu.RUnlock()
+	if cached != "" {
+		return []string{cached}, nil
+	}
+
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, c.loadOptions("")...)
+	if err != nil {
+		return nil, fmt.Errorf("resolving AWS region from the environment: %w", err)
+	}
+	if cfg.Region == "" {
+		return nil, errors.New(
+			"aws: no region found. Set cloud.aws.region, AWS_REGION, " +
+				"or a region in your shared profile (~/.aws/config)")
+	}
+
+	c.mu.Lock()
+	c.resolvedRegion = cfg.Region
+	c.mu.Unlock()
+
+	return []string{cfg.Region}, nil
+}
+
+// recordIdentity notes which profile and region the SDK resolved.
+//
+// It deliberately does not retrieve the credentials themselves. Doing so is a
+// network call for SSO and web-identity providers, and putting it on the
+// collection path cost seconds per cycle purely to populate a display field. The
+// credential source is filled in by CheckAccess, which is already making a call.
+// If the credentials are broken, this cycle's real API calls will say so.
+func (c *AWSCollector) recordIdentity(ctx context.Context, region string) {
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, c.loadOptions(region)...)
+	if err != nil {
+		return
+	}
+
+	identity := AWSIdentity{
+		Profile: c.config.Profile,
+		Region:  cfg.Region,
+	}
+	if identity.Profile == "" {
+		identity.Profile = os.Getenv("AWS_PROFILE")
+	}
+	if identity.Profile == "" {
+		identity.Profile = "default"
+	}
+
+	c.mu.Lock()
+	// A source already established by CheckAccess is not overwritten.
+	if c.identity.Source != "" {
+		identity.Source = c.identity.Source
+	}
+	c.identity = identity
+	c.mu.Unlock()
+}
+
+// Identity reports the resolved credentials, for the UI and the -check report.
+func (c *AWSCollector) Identity() AWSIdentity {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.identity
+}
+
+// CheckAccess resolves local credentials and calls STS GetCallerIdentity, proving
+// they work and naming the account they belong to.
+func (c *AWSCollector) CheckAccess(ctx context.Context) (AWSIdentity, error) {
+	regions, err := c.resolveRegions(ctx)
+	if err != nil {
+		return c.Identity(), err
+	}
+
+	c.recordIdentity(ctx, regions[0])
+	identity := c.Identity()
+
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, c.loadOptions(regions[0])...)
+	if err != nil {
+		return identity, err
+	}
+
+	// Retrieving the credentials is what names the provider, and may be a network
+	// call. That is acceptable here: -check exists to verify exactly this.
+	if creds, credErr := cfg.Credentials.Retrieve(ctx); credErr == nil {
+		identity.Source = creds.Source
+	} else {
+		identity.Source = "unresolved: " + credErr.Error()
+	}
+
+	c.mu.Lock()
+	c.identity.Source = identity.Source
+	c.mu.Unlock()
+
+	out, err := sts.NewFromConfig(cfg).GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		return identity, fmt.Errorf("verifying credentials with STS: %w", err)
+	}
+
+	identity.Account = aws.ToString(out.Account)
+	identity.ARN = aws.ToString(out.Arn)
+
+	c.mu.Lock()
+	c.identity = identity
+	c.mu.Unlock()
+
+	return identity, nil
+}
+
 // Collect enumerates the configured regions.
 //
 // A region that fails is recorded on the result's Errors field rather than
@@ -167,9 +316,15 @@ func (c *AWSCollector) Collect(ctx context.Context) (any, error) {
 	ctx, cancel := context.WithTimeout(ctx, awsCollectTimeout)
 	defer cancel()
 
-	regions := c.config.regions()
-	if len(regions) == 0 {
-		return nil, errors.New("aws: no region configured (set cloud.aws.region)")
+	regions, err := c.resolveRegions(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Recorded once so the UI can show which local credentials are in use. This
+	// reads configuration only and makes no network call.
+	if c.Identity().Region == "" {
+		c.recordIdentity(ctx, regions[0])
 	}
 
 	result := models.CloudProviderMetrics{
@@ -189,7 +344,7 @@ func (c *AWSCollector) Collect(ctx context.Context) (any, error) {
 		go func(region string) {
 			defer wg.Done()
 
-			instances, buckets, databases, errs := c.collectRegion(ctx, region)
+			instances, buckets, databases, errs := c.collectRegion(ctx, region, regions[0])
 
 			mu.Lock()
 			defer mu.Unlock()
@@ -230,7 +385,7 @@ func (c *AWSCollector) Collect(ctx context.Context) (any, error) {
 }
 
 // collectRegion gathers one region's inventory.
-func (c *AWSCollector) collectRegion(ctx context.Context, region string) (
+func (c *AWSCollector) collectRegion(ctx context.Context, region, primaryRegion string) (
 	[]models.CloudInstanceMetrics, []models.CloudStorageMetrics, []models.CloudDatabaseMetrics, []string,
 ) {
 	clients, err := c.clientsFor(ctx, region)
@@ -255,7 +410,7 @@ func (c *AWSCollector) collectRegion(ctx context.Context, region string) (
 	}
 
 	if c.config.wants("s3") {
-		found, err := c.listBuckets(ctx, clients, region)
+		found, err := c.listBuckets(ctx, clients, region, primaryRegion)
 		if err != nil {
 			problems = append(problems, fmt.Sprintf("%s s3: %v", region, err))
 		} else {
@@ -399,8 +554,8 @@ func (c *AWSCollector) applyInstanceUtilisation(ctx context.Context, clients *aw
 
 // listBuckets lists S3 buckets. ListBuckets is a global operation, so it is only
 // issued for the primary region to avoid repeating the same inventory per region.
-func (c *AWSCollector) listBuckets(ctx context.Context, clients *awsClients, region string) ([]models.CloudStorageMetrics, error) {
-	if len(c.config.regions()) > 0 && region != c.config.regions()[0] {
+func (c *AWSCollector) listBuckets(ctx context.Context, clients *awsClients, region string, primaryRegion string) ([]models.CloudStorageMetrics, error) {
+	if region != primaryRegion {
 		return nil, nil
 	}
 

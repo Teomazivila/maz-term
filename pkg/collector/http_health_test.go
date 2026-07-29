@@ -252,7 +252,7 @@ func TestHTTPCheckerConcurrencyIsBounded(t *testing.T) {
 
 func TestHTTPCheckerRespectsCancellation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		time.Sleep(time.Second)
+		time.Sleep(500 * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()

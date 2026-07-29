@@ -34,6 +34,7 @@ type GitStatusCollector struct {
 	*BaseCollector
 
 	repoPath string
+	remote   string
 
 	mu      sync.RWMutex
 	metrics models.GitRepoMetrics
@@ -45,6 +46,16 @@ type GitStatusCollector struct {
 // empty path means the current working directory. A leading ~ is expanded,
 // which Go does not do and the shell cannot do for a value read from YAML.
 func NewGitStatusCollector(repoPath string) *GitStatusCollector {
+	return NewGitStatusCollectorWithRemote(repoPath, "")
+}
+
+// NewGitStatusCollectorWithRemote creates a collector for a specific remote. An
+// empty remote means origin.
+func NewGitStatusCollectorWithRemote(repoPath, remote string) *GitStatusCollector {
+	if remote == "" {
+		remote = "origin"
+	}
+
 	resolved, err := ExpandPath(repoPath)
 	if err != nil || resolved == "" {
 		if cwd, cwdErr := os.Getwd(); cwdErr == nil {
@@ -57,6 +68,7 @@ func NewGitStatusCollector(repoPath string) *GitStatusCollector {
 	return &GitStatusCollector{
 		BaseCollector: NewBaseCollector("git_status"),
 		repoPath:      resolved,
+		remote:        remote,
 		metrics: models.GitRepoMetrics{
 			Name: filepath.Base(resolved),
 			Path: resolved,
@@ -186,11 +198,27 @@ func (c *GitStatusCollector) collectRepoData(ctx context.Context) models.GitRepo
 		}
 	}
 
-	// No configured upstream is normal, so a failure here means zero pending
-	// commits rather than a reported problem.
-	if pending, err := c.git(ctx, "rev-list", "--count", "@{u}..HEAD"); err == nil {
-		if parsed, convErr := strconv.Atoi(strings.TrimSpace(pending)); convErr == nil {
-			metrics.PendingCommits = parsed
+	metrics.Remote = c.remote
+
+	// The remote URL comes from the repository's own config, which is also where
+	// the operator's credential helper and SSH settings live.
+	if url, err := c.git(ctx, "remote", "get-url", c.remote); err == nil {
+		metrics.RemoteURL = strings.TrimSpace(url)
+	}
+
+	// Without an upstream there is nothing to compare against, so unpushed
+	// commits are reported as unknown rather than as zero.
+	if _, err := c.git(ctx, "rev-parse", "--abbrev-ref", "@{u}"); err == nil {
+		metrics.HasUpstream = true
+	}
+
+	// Only meaningful with an upstream, and only as of the last fetch: this is a
+	// local comparison and makes no network call.
+	if metrics.HasUpstream {
+		if pending, err := c.git(ctx, "rev-list", "--count", "@{u}..HEAD"); err == nil {
+			if parsed, convErr := strconv.Atoi(strings.TrimSpace(pending)); convErr == nil {
+				metrics.PendingCommits = parsed
+			}
 		}
 	}
 
