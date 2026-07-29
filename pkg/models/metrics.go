@@ -4,11 +4,23 @@ import "time"
 
 // SystemMetrics represents system-level metrics
 type SystemMetrics struct {
-	CPU         CPUMetrics     `json:"cpu"`
-	Memory      MemoryMetrics  `json:"memory"`
-	Disk        DiskMetrics    `json:"disk"`
-	Network     NetworkMetrics `json:"network"`
-	CollectedAt time.Time      `json:"collected_at"`
+	CPU         CPUMetrics       `json:"cpu"`
+	Memory      MemoryMetrics    `json:"memory"`
+	Disk        DiskMetrics      `json:"disk"`
+	Network     NetworkMetrics   `json:"network"`
+	Processes   []ProcessMetrics `json:"processes"`
+	CollectedAt time.Time        `json:"collected_at"`
+}
+
+// ProcessMetrics represents a single running process, as shown in the process
+// table. Only the highest-consuming processes are collected.
+type ProcessMetrics struct {
+	PID           int32   `json:"pid"`
+	Name          string  `json:"name"`
+	Command       string  `json:"command"`
+	CPUPercent    float64 `json:"cpu_percent"`
+	MemoryPercent float64 `json:"memory_percent"`
+	MemoryBytes   uint64  `json:"memory_bytes"`
 }
 
 // CPUMetrics represents CPU metrics
@@ -72,17 +84,44 @@ type EndpointMetrics struct {
 	ResponseTime time.Duration `json:"response_time"`
 	IsUp         bool          `json:"is_up"`
 	LastChecked  time.Time     `json:"last_checked"`
+
+	// Error holds the transport-level failure for the most recent check, if
+	// any. It is empty when the endpoint responded, whatever the status code.
+	Error string `json:"error,omitempty"`
+
+	// Availability is the percentage of successful checks over the collector's
+	// rolling window, and ChecksInWindow is how many checks that window holds.
+	// They are zero until at least one check has completed.
+	Availability   float64 `json:"availability"`
+	ChecksInWindow int     `json:"checks_in_window"`
 }
 
 // GitRepoMetrics represents Git repository metrics
 type GitRepoMetrics struct {
 	Name           string       `json:"name"`
+	Path           string       `json:"path"`
 	Branch         string       `json:"branch"`
+	Branches       []string     `json:"branches"`
 	CommitCount    int          `json:"commit_count"`
 	LastCommit     time.Time    `json:"last_commit"`
 	PendingCommits int          `json:"pending_commits"`
 	ModifiedFiles  int          `json:"modified_files"`
+	UntrackedFiles int          `json:"untracked_files"`
+	ChangedFiles   []GitChange  `json:"changed_files"`
 	CommitHistory  []CommitInfo `json:"commit_history"`
+
+	// IsRepository reports whether Path is a Git work tree. Error holds the
+	// reason collection failed, so the UI can say so instead of displaying
+	// zeroes that look like a clean repository.
+	IsRepository bool   `json:"is_repository"`
+	Error        string `json:"error,omitempty"`
+}
+
+// GitChange is a single entry from git status --porcelain.
+type GitChange struct {
+	// Status is the two-character porcelain code, for example " M", "??" or "A ".
+	Status string `json:"status"`
+	Path   string `json:"path"`
 }
 
 // CommitInfo represents a single git commit

@@ -1,160 +1,207 @@
+// Package collector gathers metrics from the local system, HTTP endpoints, Git
+// repositories and remote infrastructure providers.
 package collector
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/Teomazivila/maz-term/pkg/models"
 )
 
-// StorageProvider represents an interface for storing metrics
+// ErrInvalidInterval is returned when a collector is started with a
+// non-positive interval. time.NewTicker panics on such a value, so it is
+// rejected at the boundary instead.
+var ErrInvalidInterval = errors.New("collector: interval must be positive")
+
+// StorageProvider persists collected metrics.
+//
+// Every method takes a concrete type. An earlier revision accepted any and
+// re-asserted the concrete type inside the storage adapter; when a collector
+// passed a pointer instead of a value the assertion failed, returned an error,
+// and that error was discarded by the caller, so samples were dropped in
+// silence. Concrete types make the same mistake a compile error.
 type StorageProvider interface {
-	StoreSystemMetrics(metrics interface{}) error
-	StoreHTTPMetrics(name string, metrics interface{}) error
-	StoreGitMetrics(metrics interface{}) error
-	StoreCloudMetrics(metrics interface{}) error
-	StoreKubernetesMetrics(metrics interface{}) error
-	StoreCICDMetrics(metrics interface{}) error
+	StoreSystemMetrics(metrics models.SystemMetrics) error
+	StoreHTTPMetrics(name string, metrics models.EndpointMetrics) error
+	StoreGitMetrics(metrics models.GitRepoMetrics) error
 }
 
-// Collector is the interface that wraps the basic Collect method
+// Collector is implemented by every metrics source.
 type Collector interface {
-	// Collect returns the collected metrics or an error
-	Collect(ctx context.Context) (interface{}, error)
+	// Collect gathers one sample. It must respect ctx cancellation.
+	Collect(ctx context.Context) (any, error)
 
-	// Name returns the name of the collector
+	// Name identifies the collector in logs and the UI.
 	Name() string
 
-	// Start starts the collector with the specified interval
+	// Start begins periodic collection at the given interval.
 	Start(ctx context.Context, interval time.Duration) error
 
-	// Stop stops the collector
+	// Stop cancels collection and blocks until the collector has stopped.
 	Stop() error
 }
 
-// BaseCollector provides common functionality for all collectors
+// BaseCollector provides the lifecycle, storage and logging plumbing shared by
+// all collectors. Embedders supply their own Collect.
+//
+// The collection context is deliberately not retained as a field: it is scoped
+// to the running loop and reaching it from elsewhere would outlive its
+// cancellation. Only the cancel function and a completion channel are kept, so
+// Stop can cancel the loop and wait for it.
 type BaseCollector struct {
-	name       string
-	running    bool
-	ctx        context.Context
-	cancel     context.CancelFunc
-	mutex      sync.RWMutex
-	lastData   interface{}
-	lastUpdate time.Time
+	name   string
+	logger *slog.Logger
+
+	mu         sync.RWMutex
 	storage    StorageProvider
+	running    bool
+	cancel     context.CancelFunc
+	done       chan struct{}
+	lastData   any
+	lastUpdate time.Time
 }
 
-// NewBaseCollector creates a new base collector
+// NewBaseCollector creates a base collector with the given name.
 func NewBaseCollector(name string) *BaseCollector {
 	return &BaseCollector{
-		name:    name,
-		running: false,
+		name:   name,
+		logger: slog.Default().With("collector", name),
 	}
 }
 
-// SetStorageProvider sets the storage provider for the collector
+// SetLogger replaces the collector's logger. A nil logger is ignored.
+func (c *BaseCollector) SetLogger(logger *slog.Logger) {
+	if logger == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.logger = logger.With("collector", c.name)
+}
+
+// Logger returns the collector's logger.
+func (c *BaseCollector) Logger() *slog.Logger {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.logger
+}
+
+// SetStorageProvider sets the store used to persist samples. Passing nil
+// disables persistence.
 func (c *BaseCollector) SetStorageProvider(provider StorageProvider) {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.storage = provider
 }
 
-// Start starts the collector with proper context management
-func (c *BaseCollector) Start(ctx context.Context, interval time.Duration) error {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+// Storage returns the configured store, or nil when persistence is disabled.
+func (c *BaseCollector) Storage() StorageProvider {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.storage
+}
 
+// Name returns the collector's name.
+func (c *BaseCollector) Name() string { return c.name }
+
+// GetName returns the collector's name.
+//
+// Deprecated: use Name. Retained because existing call sites reference it.
+func (c *BaseCollector) GetName() string { return c.name }
+
+// start launches the periodic collection loop and returns immediately. collect
+// runs once up front and then on every tick, always with the loop context.
+//
+// Stop blocks until the loop has returned, so a stopped collector never leaves
+// a goroutine writing to a closed store.
+func (c *BaseCollector) start(ctx context.Context, interval time.Duration, collect func(context.Context)) error {
+	if interval <= 0 {
+		return fmt.Errorf("%w, got %s", ErrInvalidInterval, interval)
+	}
+
+	c.mu.Lock()
 	if c.running {
-		return nil // Already running
+		c.mu.Unlock()
+		return nil
 	}
+	loopCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	c.cancel, c.done, c.running = cancel, done, true
+	logger := c.logger
+	c.mu.Unlock()
 
-	// Create cancellable context for this collector
-	c.ctx, c.cancel = context.WithCancel(ctx)
-	c.running = true
+	logger.Debug("collector started", "interval", interval)
+
+	go func() {
+		defer close(done)
+
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		collect(loopCtx)
+
+		for {
+			select {
+			case <-ticker.C:
+				collect(loopCtx)
+			case <-loopCtx.Done():
+				logger.Debug("collector loop stopped")
+				return
+			}
+		}
+	}()
 
 	return nil
 }
 
-// Stop stops the collector with proper cleanup
+// Stop cancels the collection loop and waits for it to exit. It is safe to call
+// on a collector that was never started, and safe to call more than once.
 func (c *BaseCollector) Stop() error {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
+	c.mu.Lock()
 	if !c.running {
-		return nil // Already stopped
+		c.mu.Unlock()
+		return nil
 	}
+	cancel, done := c.cancel, c.done
+	c.running, c.cancel, c.done = false, nil, nil
+	c.mu.Unlock()
 
-	c.running = false
-	if c.cancel != nil {
-		c.cancel()
-	}
+	cancel()
+	<-done
 
 	return nil
 }
 
-// IsRunning returns true if the collector is running
+// IsRunning reports whether the collection loop is active.
 func (c *BaseCollector) IsRunning() bool {
-	c.mutex.RLock()
-	defer c.mutex.RUnlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.running
 }
 
-// GetName returns the name of the collector
-func (c *BaseCollector) GetName() string {
-	return c.name
-}
-
-// UpdateData updates the last collected data
-func (c *BaseCollector) UpdateData(data interface{}) {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+// UpdateData records the most recent sample and the time it was taken.
+func (c *BaseCollector) UpdateData(data any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.lastData = data
 	c.lastUpdate = time.Now()
 }
 
-// GetLastData returns the last collected data
-func (c *BaseCollector) GetLastData() interface{} {
-	c.mutex.RLock()
-	defer c.mutex.RUnlock()
+// GetLastData returns the most recent sample.
+func (c *BaseCollector) GetLastData() any {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.lastData
 }
 
-// GetLastUpdateTime returns the time of the last data update
+// GetLastUpdateTime returns when the most recent sample was taken.
 func (c *BaseCollector) GetLastUpdateTime() time.Time {
-	c.mutex.RLock()
-	defer c.mutex.RUnlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.lastUpdate
-}
-
-// StoreData attempts to store the data if a storage provider is available
-func (c *BaseCollector) StoreData(name string, data interface{}, storageType string) {
-	c.mutex.RLock()
-	storage := c.storage
-	c.mutex.RUnlock()
-
-	if storage == nil {
-		return // No storage provider available
-	}
-
-	// Try to store the data based on the type
-	switch storageType {
-	case "system":
-		_ = storage.StoreSystemMetrics(data)
-	case "http":
-		_ = storage.StoreHTTPMetrics(name, data)
-	case "git":
-		_ = storage.StoreGitMetrics(data)
-	case "cloud":
-		_ = storage.StoreCloudMetrics(data)
-	case "kubernetes":
-		_ = storage.StoreKubernetesMetrics(data)
-	case "cicd":
-		_ = storage.StoreCICDMetrics(data)
-	}
-}
-
-// Context returns the collector's context for cancellation
-func (c *BaseCollector) Context() context.Context {
-	c.mutex.RLock()
-	defer c.mutex.RUnlock()
-	return c.ctx
 }
