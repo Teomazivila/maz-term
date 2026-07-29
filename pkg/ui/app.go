@@ -1,6 +1,8 @@
+// Package ui renders the maz-term dashboard.
 package ui
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/Teomazivila/maz-term/pkg/collector"
@@ -11,8 +13,12 @@ import (
 	"github.com/gizak/termui/v3/widgets"
 )
 
-// StorageInterface defines the interface for data storage operations
-type StorageInterface interface {
+// Storage is the persistence surface the dashboard needs. It combines the write
+// side used by collectors with the read side used by the History and
+// Notifications tabs, so a single object satisfies both.
+type Storage interface {
+	collector.StorageProvider
+
 	// System metrics history
 	GetCPUUsageHistory(period time.Duration, points int) ([]models.TimeSeriesPoint, error)
 	GetMemoryUsageHistory(period time.Duration, points int) ([]models.TimeSeriesPoint, error)
@@ -27,6 +33,7 @@ type StorageInterface interface {
 	GetCommitCountHistory(repoName string, period time.Duration, points int) ([]models.TimeSeriesPoint, error)
 	GetModifiedFilesHistory(repoName string, period time.Duration, points int) ([]models.TimeSeriesPoint, error)
 	GetPendingCommitsHistory(repoName string, period time.Duration, points int) ([]models.TimeSeriesPoint, error)
+	GetAllGitRepositories() ([]string, error)
 
 	// Event annotations
 	GetEventAnnotations(period time.Duration) ([]models.EventAnnotation, error)
@@ -36,63 +43,142 @@ type StorageInterface interface {
 	// Notifications
 	AddNotification(notification models.Notification) error
 	GetNotifications(count int, includeRead bool) ([]models.Notification, error)
-	GetFilteredNotifications(count int, includeRead bool, sources []string, severities []string) ([]models.Notification, error)
+	GetFilteredNotifications(count int, includeRead bool, sources, severities []string) ([]models.Notification, error)
+	GetNotificationSources() ([]string, error)
+	GetNotificationSeverities() ([]string, error)
 	MarkAsRead(id string) error
 	DismissNotification(id string) error
 	ClearAllNotifications() error
 	GetUnreadNotificationCount() (int, error)
+
+	// Export
+	ExportAll(outputDir string, period time.Duration) ([]string, error)
 }
 
-// App represents the main terminal UI application
+// StorageInterface is an alias retained for compatibility with existing call
+// sites.
+//
+// Deprecated: use Storage.
+type StorageInterface = Storage
+
+// historyRange is one selectable window on the History tab.
+type historyRange struct {
+	Label string
+	Value time.Duration
+}
+
+// historyRanges is the single source of truth for the History tab's selectable
+// windows. The on-screen legend and the keyboard handler both derive from it, so
+// they cannot disagree.
+var historyRanges = []historyRange{
+	{"1h", time.Hour},
+	{"6h", 6 * time.Hour},
+	{"12h", 12 * time.Hour},
+	{"24h", 24 * time.Hour},
+	{"3d", 72 * time.Hour},
+	{"7d", 168 * time.Hour},
+	{"30d", 720 * time.Hour},
+}
+
+// defaultHistoryRangeIndex selects the 24h window.
+const defaultHistoryRangeIndex = 3
+
+// annotationDraft holds in-progress input for the annotation form.
+//
+// This state lives on App rather than inside the key handler. Holding it in a
+// function-local struct meant it was re-zeroed on every keystroke, so the title
+// could never grow past one character and the form could never be submitted.
+type annotationDraft struct {
+	Title       string
+	Description string
+	Field       int // 0 = title, 1 = description
+}
+
+// filterDraft holds in-progress notification filter selections. It lives on App
+// for the same reason as annotationDraft.
+type filterDraft struct {
+	Section    int // 0 = sources, 1 = severities
+	Index      int
+	Sources    map[string]bool
+	Severities map[string]bool
+}
+
+// selected returns the chosen keys of m in stable order relative to order.
+func selected(m map[string]bool, order []string) []string {
+	var out []string
+	for _, key := range order {
+		if m[key] {
+			out = append(out, key)
+		}
+	}
+	return out
+}
+
+// App represents the main terminal UI application.
 type App struct {
-	Config                 *config.Config
-	ActiveTabIndex         int
-	Tabs                   []*Tab
-	StatusBar              *widgets.Paragraph
-	Grid                   *ui.Grid
-	TabBar                 *widgets.TabPane
-	Running                bool
-	SystemCollector        *collector.SystemMetricsCollector
-	HTTPCollector          *collector.HTTPHealthChecker
-	GitCollector           *collector.GitStatusCollector
-	CloudCollector         interface{ GetLatestMetrics() interface{} }
-	KubernetesCollector    interface{ GetLatestMetrics() interface{} }
-	CICDCollector          interface{ GetLatestMetrics() interface{} }
-	TermWidth              int
-	TermHeight             int
-	ShowHelp               bool
-	HelpPanel              *widgets.Paragraph
-	Storage                StorageInterface
-	ExportInProgress       bool
-	HistoryRange           time.Duration            // Selected time range for history tab
-	HistoryRangeIdx        int                      // Index of currently selected range option
-	ShowAnnotations        bool                     // Whether to show event annotations
-	Annotations            []models.EventAnnotation // Cached event annotations
-	AddingAnnotation       bool                     // Whether we're currently adding a new annotation
-	AnnotationForm         *widgets.Paragraph       // Form for adding new annotations
-	ZoomMode               bool                     // Whether we're in zoom mode
-	ZoomActiveChart        int                      // Index of chart being zoomed
-	ZoomStartPercent       float64                  // Start position of zoom region (percentage)
-	ZoomEndPercent         float64                  // End position of zoom region (percentage)
-	ZoomStartTime          time.Time                // Start time for zoomed view
-	ZoomEndTime            time.Time                // End time for zoomed view
-	ComparisonMode         bool                     // Whether comparison mode is active
-	PrimaryMetric          string                   // Primary metric being compared
-	ComparisonMetrics      []string                 // List of metrics being compared
-	Notifications          []models.Notification    // Cached notifications
-	SelectedNotification   int                      // Index of the selected notification
-	NotificationDetailMode bool                     // Whether notification detail mode is active
-	NotificationSources    []string                 // List of sources to filter notifications by
-	NotificationSeverities []string                 // List of severities to filter notifications by
-	NotificationFilterMode bool                     // Whether filter mode is active
-	PluginManager          *plugins.PluginManager   // Plugin manager
-	PluginMetrics          []models.Metric          // Metrics from plugins
+	Config *config.Config
+
+	// Layout
+	ActiveTabIndex int
+	Tabs           []*Tab
+	StatusBar      *widgets.Paragraph
+	TabBar         *widgets.TabPane
+	HelpPanel      *widgets.Paragraph
+	AnnotationForm *widgets.Paragraph
+	TermWidth      int
+	TermHeight     int
+	ShowHelp       bool
+
+	// Collectors
+	SystemCollector *collector.SystemMetricsCollector
+	HTTPCollector   *collector.HTTPHealthChecker
+	GitCollector    *collector.GitStatusCollector
+
+	// Persistence
+	Storage         Storage
+	storageProvider collector.StorageProvider
+
+	// History tab
+	HistoryRange    time.Duration
+	HistoryRangeIdx int
+	ShowAnnotations bool
+	Annotations     []models.EventAnnotation
+
+	// Zoom
+	ZoomMode         bool
+	ZoomStartPercent float64
+	ZoomEndPercent   float64
+	ZoomStartTime    time.Time
+	ZoomEndTime      time.Time
+
+	// Notifications
+	Notifications          []models.Notification
+	SelectedNotification   int
+	NotificationDetailMode bool
+	NotificationFilterMode bool
+	NotificationSources    []string
+	NotificationSeverities []string
+	activeSources          []string
+	activeSeverities       []string
+
+	// In-progress form input
+	addingAnnotation bool
+	annotation       annotationDraft
+	filter           filterDraft
+
+	// Plugins
+	PluginManager  *plugins.PluginManager
+	PluginMetrics  []models.Metric
+	SelectedPlugin int
+
+	// Status
+	statusMessage string
+	quit          bool
 }
 
-// Tab represents a terminal UI tab
+// Tab represents one dashboard tab and the widgets it owns.
 type Tab struct {
 	Name       string
-	Grid       *ui.Grid
 	Widgets    []ui.Drawable
 	Panels     []*widgets.Paragraph
 	Gauges     []*widgets.Gauge
@@ -101,86 +187,84 @@ type Tab struct {
 	BarCharts  []*widgets.BarChart
 	Plots      []*widgets.Plot
 	Lists      []*widgets.List
-	HasUnread  bool // Whether this tab has unread notifications
+	HasUnread  bool
 }
 
-// createUI creates the terminal UI elements
-func (a *App) createUI() {
-	// Create main grid
-	a.Grid = ui.NewGrid()
-
-	// Create status bar
-	a.StatusBar = widgets.NewParagraph()
-	a.StatusBar.Title = "Status"
-	a.StatusBar.Text = "Initializing..."
-	a.StatusBar.BorderStyle.Fg = ui.ColorCyan
-
-	// Create tab bar
-	a.TabBar = widgets.NewTabPane(a.getTabNames()...)
-	a.TabBar.ActiveTabIndex = a.ActiveTabIndex
-	a.TabBar.Border = true
-
-	// Create help panel (initially hidden)
-	a.HelpPanel = widgets.NewParagraph()
-	a.HelpPanel.Title = "Help"
-	a.HelpPanel.Text = `
-Navigation:
-  Tab/Shift-Tab: Switch between tabs
-  ←/→: Navigate tabs
-  ↑/↓: Navigate within tab
-  Enter: Select/activate item
-  
-Actions:
-  h: Toggle this help
-  q: Quit application
-  r: Refresh data
-  e: Export data
-  
-History Tab:
-  1-7: Select time range (1h, 6h, 24h, 3d, 7d, 30d, 90d)
-  a: Add event annotation
-  z: Toggle zoom mode
-  c: Toggle comparison mode
-  
-Notifications:
-  m: Mark as read
-  d: Dismiss notification
-  f: Filter notifications
-  x: Clear all notifications
-`
-	a.HelpPanel.WrapText = true
-	a.HelpPanel.BorderStyle.Fg = ui.ColorYellow
-
-	// Initialize history range
-	a.HistoryRange = 24 * time.Hour // Default to 24 hours
-	a.HistoryRangeIdx = 2           // Index for 24h in the range options
+// SetStorage sets the storage used for history and notification reads.
+func (a *App) SetStorage(store Storage) {
+	a.Storage = store
 }
 
-// SetCloudCollector sets the cloud metrics collector
-func (a *App) SetCloudCollector(collector interface{ GetLatestMetrics() interface{} }) {
-	a.CloudCollector = collector
+// SetStorageProvider records the store used to persist collected samples and
+// applies it to any collector that already exists.
+//
+// The provider is retained so that collectors created later, inside Run, also
+// receive it. Previously this was called before the collectors existed, every
+// nil check failed, and nothing was ever persisted.
+func (a *App) SetStorageProvider(provider collector.StorageProvider) {
+	a.storageProvider = provider
+	a.applyStorageProvider()
 }
 
-// SetKubernetesCollector sets the Kubernetes metrics collector
-func (a *App) SetKubernetesCollector(collector interface{ GetLatestMetrics() interface{} }) {
-	a.KubernetesCollector = collector
+// applyStorageProvider pushes the recorded provider into every live collector.
+func (a *App) applyStorageProvider() {
+	if a.storageProvider == nil {
+		return
+	}
+	if a.SystemCollector != nil {
+		a.SystemCollector.SetStorageProvider(a.storageProvider)
+	}
+	if a.HTTPCollector != nil {
+		a.HTTPCollector.SetStorageProvider(a.storageProvider)
+	}
+	if a.GitCollector != nil {
+		a.GitCollector.SetStorageProvider(a.storageProvider)
+	}
 }
 
-// SetCICDCollector sets the CI/CD metrics collector
-func (a *App) SetCICDCollector(collector interface{ GetLatestMetrics() interface{} }) {
-	a.CICDCollector = collector
+// setStatus records the message shown in the status bar.
+func (a *App) setStatus(format string, args ...any) {
+	if len(args) == 0 {
+		a.statusMessage = format
+		return
+	}
+	a.statusMessage = fmt.Sprintf(format, args...)
 }
 
-// SetStorage sets the storage interface
-func (a *App) SetStorage(storage StorageInterface) {
-	a.Storage = storage
+// activeTab returns the currently selected tab, or nil when there are none.
+func (a *App) activeTab() *Tab {
+	if a.ActiveTabIndex < 0 || a.ActiveTabIndex >= len(a.Tabs) {
+		return nil
+	}
+	return a.Tabs[a.ActiveTabIndex]
 }
 
-// getTabNames returns the names of all tabs
+// activeTabName returns the current tab's name, or "" when there are no tabs.
+func (a *App) activeTabName() string {
+	if tab := a.activeTab(); tab != nil {
+		return tab.Name
+	}
+	return ""
+}
+
+// getTabByName returns the tab with the given name, or nil.
+func (a *App) getTabByName(name string) *Tab {
+	for _, tab := range a.Tabs {
+		if tab.Name == name {
+			return tab
+		}
+	}
+	return nil
+}
+
+// getTabNames returns the display names of all tabs, including unread badges.
 func (a *App) getTabNames() []string {
 	names := make([]string, len(a.Tabs))
 	for i, tab := range a.Tabs {
 		names[i] = tab.Name
+		if tab.HasUnread {
+			names[i] += " *"
+		}
 	}
 	return names
 }
