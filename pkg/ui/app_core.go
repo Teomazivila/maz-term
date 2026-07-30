@@ -56,6 +56,11 @@ func NewApp(cfg *config.Config) *App {
 		HistoryRangeIdx: defaultHistoryRangeIndex,
 		ShowAnnotations: true,
 		PluginManager:   plugins.NewPluginManager(),
+		// Storage- and plugin-backed views cost far more than a redraw, so they
+		// refresh on their own cadence rather than once per frame.
+		historyRefresh:       throttle{every: 5 * time.Second},
+		notificationsRefresh: throttle{every: 3 * time.Second},
+		pluginRefresh:        throttle{every: 5 * time.Second},
 		filter: filterDraft{
 			Sources:    make(map[string]bool),
 			Severities: make(map[string]bool),
@@ -158,8 +163,9 @@ func (a *App) Run(ctx context.Context) error {
 			if a.quit {
 				return nil
 			}
-			// Redraw immediately so input feels responsive instead of waiting
-			// for the next tick.
+			// Only the active tab is refreshed, so a tab switch has to populate
+			// the newly visible one before drawing it.
+			a.updateData()
 			a.render()
 
 		case <-ticker.C:
@@ -315,7 +321,8 @@ func (a *App) helpText() string {
   Tab / Right / l / n   next tab
   BackTab / Left / h / p  previous tab
   1-9                   jump to tab by position
-  Up / Down             move selection within a list
+  Up / Down / j / k     move selection in the table
+  Home / End / g / G    first / last row
 
 Actions
   ?    toggle this help

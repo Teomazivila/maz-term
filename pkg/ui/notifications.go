@@ -155,6 +155,8 @@ func (a *App) updateNotificationsTabData() {
 		return
 	}
 
+	a.refreshNotificationsIfDue()
+
 	if len(tab.Widgets) == 0 {
 		list := widgets.NewList()
 		list.Title = "Notifications"
@@ -210,6 +212,14 @@ func (a *App) updateNotificationsTabData() {
 
 	a.updateNotificationDetails()
 	a.updateFilterPanel()
+}
+
+// refreshNotificationsIfDue reloads from storage on the throttle's cadence.
+func (a *App) refreshNotificationsIfDue() {
+	if a.Storage == nil || !a.notificationsRefresh.ready() {
+		return
+	}
+	a.loadNotifications()
 }
 
 // updateNotificationDetails refreshes the detail panel for the selection.

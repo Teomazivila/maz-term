@@ -42,7 +42,9 @@ func (a *App) layoutTab(tab *Tab, rect image.Rectangle) []ui.Drawable {
 // layoutSystemTab arranges the CPU and memory gauges, the CPU sparkline, the
 // disk chart and the process table.
 func (a *App) layoutSystemTab(tab *Tab, rect image.Rectangle) []ui.Drawable {
-	rows := splitRows(rect, 0.18, 0.18, 0.20, 0.44)
+	// Fixed heights for the small widgets, so the process table takes the space
+	// instead of a gauge growing into a seven-row block of solid colour.
+	rows := stackRows(rect, fixedRows(3), fixedRows(8), fixedRows(8), flexRows(1))
 	gauges := splitCols(rows[0], 0.5, 0.5)
 
 	rects := []image.Rectangle{gauges[0], gauges[1], rows[1], rows[2], rows[3]}
@@ -52,7 +54,7 @@ func (a *App) layoutSystemTab(tab *Tab, rect image.Rectangle) []ui.Drawable {
 // layoutHTTPTab arranges the endpoint table, the two sparklines and the details
 // panel.
 func (a *App) layoutHTTPTab(tab *Tab, rect image.Rectangle) []ui.Drawable {
-	rows := splitRows(rect, 0.45, 0.25, 0.30)
+	rows := stackRows(rect, flexRows(1), fixedRows(8), fixedRows(9))
 	sparks := splitCols(rows[1], 0.5, 0.5)
 
 	rects := []image.Rectangle{rows[0], sparks[0], sparks[1], rows[2]}
@@ -62,7 +64,7 @@ func (a *App) layoutHTTPTab(tab *Tab, rect image.Rectangle) []ui.Drawable {
 // layoutGitTab arranges the repository summary, changed files, commit history
 // and branch list.
 func (a *App) layoutGitTab(tab *Tab, rect image.Rectangle) []ui.Drawable {
-	rows := splitRows(rect, 0.24, 0.30, 0.30, 0.16)
+	rows := stackRows(rect, fixedRows(11), flexRows(1), flexRows(1), fixedRows(6))
 
 	rects := []image.Rectangle{rows[0], rows[1], rows[2], rows[3]}
 	return compact(tab.Widgets, rects)
@@ -131,11 +133,11 @@ func (a *App) layoutNotificationsTab(tab *Tab, rect image.Rectangle) []ui.Drawab
 	var rows []image.Rectangle
 	switch {
 	case a.NotificationDetailMode:
-		rows = splitRows(rect, 0.30, 0.58, 0.12)
+		rows = stackRows(rect, flexRows(1), fixedRows(16), fixedRows(5))
 	case a.NotificationFilterMode:
-		rows = splitRows(rect, 0.30, 0.18, 0.52)
+		rows = stackRows(rect, flexRows(1), fixedRows(6), flexRows(1))
 	default:
-		rows = splitRows(rect, 0.60, 0.28, 0.12)
+		rows = stackRows(rect, flexRows(1), fixedRows(10), fixedRows(6))
 	}
 
 	rects := []image.Rectangle{rows[0], rows[1], rows[2]}
@@ -144,7 +146,7 @@ func (a *App) layoutNotificationsTab(tab *Tab, rect image.Rectangle) []ui.Drawab
 
 // layoutPluginsTab arranges the plugin list above the detail panel.
 func (a *App) layoutPluginsTab(tab *Tab, rect image.Rectangle) []ui.Drawable {
-	rows := splitRows(rect, 0.40, 0.60)
+	rows := stackRows(rect, flexRows(1), fixedRows(14))
 
 	rects := []image.Rectangle{rows[0], rows[1]}
 	return compact(tab.Widgets, rects)

@@ -81,6 +81,27 @@ func (a *App) handleGlobalEvent(e ui.Event) {
 	case "<BackTab>", "<Left>", "h", "p":
 		a.changeTab(-1)
 
+	case "<Up>", "k":
+		// A cluster listing hundreds of rows is unusable without this.
+		if table := a.primaryTable(); table != nil {
+			table.MoveSelection(-1)
+		}
+
+	case "<Down>", "j":
+		if table := a.primaryTable(); table != nil {
+			table.MoveSelection(1)
+		}
+
+	case "<Home>", "g":
+		if table := a.primaryTable(); table != nil {
+			table.SelectedRow = 0
+		}
+
+	case "<End>", "G":
+		if table := a.primaryTable(); table != nil {
+			table.SelectedRow = len(table.Rows) - 1
+		}
+
 	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 		index, err := strconv.Atoi(e.ID)
 		if err != nil {
@@ -157,10 +178,25 @@ func (a *App) onTabChanged() {
 
 	a.setStatus("%s", tab.Name)
 
+	// The operator has just asked to see this tab, so its throttled data is
+	// loaded now rather than up to a cadence later.
+	a.historyRefresh.force()
+	a.pluginRefresh.force()
+
 	if tab.Name == "Notifications" {
 		tab.HasUnread = false
+		a.notificationsRefresh.force()
 		a.loadNotifications()
 	}
+}
+
+// primaryTable returns the active tab's main table, when it has one.
+func (a *App) primaryTable() *DataTable {
+	tab := a.activeTab()
+	if tab == nil || len(tab.Tables) == 0 {
+		return nil
+	}
+	return tab.Tables[0]
 }
 
 // beginAnnotation opens the annotation form with an empty draft.

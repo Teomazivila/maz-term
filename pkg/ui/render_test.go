@@ -56,7 +56,6 @@ func TestBuildFrameIncludesTabContentAndChrome(t *testing.T) {
 // which also exercises every layout function.
 func TestBuildFrameForEveryTab(t *testing.T) {
 	app := newTestApp(t)
-	app.updateData()
 
 	for i, tab := range app.Tabs {
 		t.Run(tab.Name, func(t *testing.T) {

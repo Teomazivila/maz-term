@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"image"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,11 +22,17 @@ func (a *App) updateCloudTabData() {
 	if len(tab.Widgets) == 0 {
 		summary := newPanel("AWS")
 		instances := newTable("Instances",
-			[]string{"Instance", "Type", "Region", "State", "CPU%", "Uptime"},
-			[]int{26, 14, 14, 12, 8, 0})
+			Column{Title: "INSTANCE", Weight: 3},
+			Column{Title: "TYPE", Width: 13},
+			Column{Title: "REGION", Width: 14},
+			Column{Title: "STATE", Width: 10},
+			Column{Title: "CPU%", Width: 6, Align: AlignRight},
+			Column{Title: "UPTIME", Width: 8, Align: AlignRight})
 		storage := newTable("Storage and databases",
-			[]string{"Resource", "Kind", "Region", "State"},
-			[]int{34, 16, 14, 0})
+			Column{Title: "RESOURCE", Weight: 3},
+			Column{Title: "KIND", Width: 16},
+			Column{Title: "REGION", Width: 14},
+			Column{Title: "STATE", Weight: 1})
 
 		spark := widgets.NewSparkline()
 		spark.LineColor = ui.ColorGreen
@@ -35,7 +42,7 @@ func (a *App) updateCloudTabData() {
 
 		tab.Widgets = []ui.Drawable{summary, instances, storage, history}
 		tab.Panels = []*widgets.Paragraph{summary}
-		tab.Tables = []*widgets.Table{instances, storage}
+		tab.Tables = []*DataTable{instances, storage}
 		tab.Sparklines = []*widgets.SparklineGroup{history}
 	}
 
@@ -83,10 +90,9 @@ func (a *App) updateCloudTabData() {
 
 	if len(tab.Tables) > 0 {
 		table := tab.Tables[0]
-		rows := [][]string{{"Instance", "Type", "Region", "State", "CPU%", "Uptime"}}
-		styles := map[int]ui.Style{0: headerStyle}
+		rows := make([]Row, 0, len(metrics.InstanceMetrics))
 
-		for i, instance := range metrics.InstanceMetrics {
+		for _, instance := range metrics.InstanceMetrics {
 			cpu := "-"
 			if instance.CPUUtilization > 0 {
 				cpu = fmt.Sprintf("%.1f", instance.CPUUtilization)
@@ -96,57 +102,33 @@ func (a *App) updateCloudTabData() {
 				uptime = FormatDuration(time.Duration(instance.UptimeHours) * time.Hour)
 			}
 
-			rows = append(rows, []string{
-				TruncateString(instance.Name, 24),
-				instance.Type,
-				instance.Region,
-				string(instance.Status),
-				cpu,
-				uptime,
-			})
-			styles[i+1] = resourceStatusStyle(instance.Status)
+			rows = append(rows, styledRow(resourceStatusStyle(instance.Status),
+				instance.Name, instance.Type, instance.Region,
+				string(instance.Status), cpu, uptime))
 		}
 
-		if len(metrics.InstanceMetrics) == 0 {
-			rows = append(rows, []string{emptyLabel(metrics.Errors, "no instances"), "-", "-", "-", "-", "-"})
-			styles[1] = subtleStyle
+		if len(rows) == 0 {
+			rows = noticeRow(6, emptyLabel(metrics.Errors, "no instances"))
 		}
-
-		table.Rows = rows
-		table.RowStyles = styles
+		table.SetRows(rows)
 	}
 
 	if len(tab.Tables) > 1 {
 		table := tab.Tables[1]
-		rows := [][]string{{"Resource", "Kind", "Region", "State"}}
-		styles := map[int]ui.Style{0: headerStyle}
-		row := 1
+		rows := make([]Row, 0, len(metrics.StorageMetrics)+len(metrics.DatabaseMetrics))
 
 		for _, bucket := range metrics.StorageMetrics {
-			rows = append(rows, []string{
-				TruncateString(bucket.Name, 32), bucket.Type, bucket.Region, "-",
-			})
-			styles[row] = normalStyle
-			row++
+			rows = append(rows, textRow(bucket.Name, bucket.Type, bucket.Region, "-"))
 		}
 		for _, database := range metrics.DatabaseMetrics {
-			rows = append(rows, []string{
-				TruncateString(database.Name, 32),
-				TruncateString(database.Engine, 14),
-				database.Region,
-				string(database.Status),
-			})
-			styles[row] = resourceStatusStyle(database.Status)
-			row++
+			rows = append(rows, styledRow(resourceStatusStyle(database.Status),
+				database.Name, database.Engine, database.Region, string(database.Status)))
 		}
 
-		if row == 1 {
-			rows = append(rows, []string{emptyLabel(metrics.Errors, "no storage or databases"), "-", "-", "-"})
-			styles[1] = subtleStyle
+		if len(rows) == 0 {
+			rows = noticeRow(4, emptyLabel(metrics.Errors, "no storage or databases"))
 		}
-
-		table.Rows = rows
-		table.RowStyles = styles
+		table.SetRows(rows)
 	}
 
 	a.applyInfraSparkline(tab, func() ([]models.TimeSeriesPoint, error) {
@@ -164,11 +146,20 @@ func (a *App) updateKubernetesTabData() {
 	if len(tab.Widgets) == 0 {
 		summary := newPanel("Cluster")
 		pods := newTable("Pods",
-			[]string{"Namespace", "Pod", "Status", "Restarts", "Node"},
-			[]int{18, 34, 16, 10, 0})
+			Column{Title: "NAMESPACE", Weight: 2},
+			Column{Title: "POD", Weight: 4},
+			Column{Title: "READY", Width: 6, Align: AlignRight},
+			Column{Title: "STATUS", Width: 18},
+			Column{Title: "RESTARTS", Width: 9, Align: AlignRight},
+			Column{Title: "AGE", Width: 6, Align: AlignRight},
+			Column{Title: "NODE", Weight: 3})
 		nodes := newTable("Nodes",
-			[]string{"Node", "Status", "CPU%", "Mem%", "Version"},
-			[]int{28, 22, 8, 8, 0})
+			Column{Title: "NODE", Weight: 3},
+			Column{Title: "STATUS", Width: 22},
+			Column{Title: "CPU%", Width: 6, Align: AlignRight},
+			Column{Title: "MEM%", Width: 6, Align: AlignRight},
+			Column{Title: "PODS", Width: 6, Align: AlignRight},
+			Column{Title: "VERSION", Weight: 1})
 
 		spark := widgets.NewSparkline()
 		spark.LineColor = ui.ColorBlue
@@ -178,7 +169,7 @@ func (a *App) updateKubernetesTabData() {
 
 		tab.Widgets = []ui.Drawable{summary, pods, nodes, history}
 		tab.Panels = []*widgets.Paragraph{summary}
-		tab.Tables = []*widgets.Table{pods, nodes}
+		tab.Tables = []*DataTable{pods, nodes}
 		tab.Sparklines = []*widgets.SparklineGroup{history}
 	}
 
@@ -231,35 +222,42 @@ func (a *App) updateKubernetesTabData() {
 
 	if len(tab.Tables) > 0 {
 		table := tab.Tables[0]
-		rows := [][]string{{"Namespace", "Pod", "Status", "Restarts", "Node"}}
-		styles := map[int]ui.Style{0: headerStyle}
+		rows := make([]Row, 0, len(metrics.Pods))
 
-		for i, pod := range limitPods(metrics.Pods, 200) {
-			rows = append(rows, []string{
-				TruncateString(pod.Namespace, 16),
-				TruncateString(pod.Name, 32),
-				TruncateString(pod.Status, 14),
-				fmt.Sprintf("%d", pod.RestartCount),
-				TruncateString(pod.Node, 30),
-			})
-			styles[i+1] = podStatusStyle(pod)
+		for _, pod := range metrics.Pods {
+			ready, total := 0, len(pod.Containers)
+			for _, container := range pod.Containers {
+				if container.Ready {
+					ready++
+				}
+			}
+			readyCell := "-"
+			if total > 0 {
+				readyCell = fmt.Sprintf("%d/%d", ready, total)
+			}
+
+			age := "-"
+			if !pod.StartTime.IsZero() {
+				age = FormatDuration(time.Since(pod.StartTime))
+			}
+
+			rows = append(rows, styledRow(podStatusStyle(pod),
+				pod.Namespace, pod.Name, readyCell, pod.Status,
+				strconv.Itoa(pod.RestartCount), age, pod.Node))
 		}
 
-		if len(metrics.Pods) == 0 {
-			rows = append(rows, []string{emptyLabel(metrics.Errors, "no pods"), "-", "-", "-", "-"})
-			styles[1] = subtleStyle
+		if len(rows) == 0 {
+			rows = noticeRow(7, emptyLabel(metrics.Errors, "no pods"))
 		}
-
-		table.Rows = rows
-		table.RowStyles = styles
+		table.SetRows(rows)
+		table.Title = fmt.Sprintf("Pods (%d)", len(metrics.Pods))
 	}
 
 	if len(tab.Tables) > 1 {
 		table := tab.Tables[1]
-		rows := [][]string{{"Node", "Status", "CPU%", "Mem%", "Version"}}
-		styles := map[int]ui.Style{0: headerStyle}
+		rows := make([]Row, 0, len(metrics.Nodes))
 
-		for i, node := range metrics.Nodes {
+		for _, node := range metrics.Nodes {
 			cpu, mem := "-", "-"
 			if node.CPUUsage > 0 {
 				cpu = fmt.Sprintf("%.0f", node.CPUUsage)
@@ -268,28 +266,21 @@ func (a *App) updateKubernetesTabData() {
 				mem = fmt.Sprintf("%.0f", node.MemoryUsage)
 			}
 
-			rows = append(rows, []string{
-				TruncateString(node.Name, 26),
-				TruncateString(node.Status, 20),
-				cpu,
-				mem,
-				node.KubeletVersion,
-			})
-
+			style := badStyle
 			if strings.HasPrefix(node.Status, "Ready") {
-				styles[i+1] = goodStyle
-			} else {
-				styles[i+1] = badStyle
+				style = goodStyle
 			}
+
+			rows = append(rows, styledRow(style,
+				node.Name, node.Status, cpu, mem,
+				strconv.Itoa(node.AllocatablePods), node.KubeletVersion))
 		}
 
-		if len(metrics.Nodes) == 0 {
-			rows = append(rows, []string{emptyLabel(metrics.Errors, "no nodes"), "-", "-", "-", "-"})
-			styles[1] = subtleStyle
+		if len(rows) == 0 {
+			rows = noticeRow(6, emptyLabel(metrics.Errors, "no nodes"))
 		}
-
-		table.Rows = rows
-		table.RowStyles = styles
+		table.SetRows(rows)
+		table.Title = fmt.Sprintf("Nodes (%d)", len(metrics.Nodes))
 	}
 
 	a.applyInfraSparkline(tab, func() ([]models.TimeSeriesPoint, error) {
@@ -307,11 +298,19 @@ func (a *App) updateCICDTabData() {
 	if len(tab.Widgets) == 0 {
 		summary := newPanel("GitHub Actions")
 		workflows := newTable("Workflows",
-			[]string{"Repository", "Workflow", "Last run", "Success", "Mean", "When"},
-			[]int{22, 26, 12, 10, 10, 0})
+			Column{Title: "REPOSITORY", Weight: 2},
+			Column{Title: "WORKFLOW", Weight: 2},
+			Column{Title: "LAST RUN", Width: 10},
+			Column{Title: "SUCCESS", Width: 8, Align: AlignRight},
+			Column{Title: "MEAN", Width: 8, Align: AlignRight},
+			Column{Title: "WHEN", Weight: 1})
 		runs := newTable("Recent runs",
-			[]string{"Workflow", "Status", "Branch", "Trigger", "Duration", "When"},
-			[]int{24, 12, 20, 12, 10, 0})
+			Column{Title: "WORKFLOW", Weight: 2},
+			Column{Title: "STATUS", Width: 10},
+			Column{Title: "BRANCH", Weight: 2},
+			Column{Title: "TRIGGER", Width: 14},
+			Column{Title: "DURATION", Width: 9, Align: AlignRight},
+			Column{Title: "WHEN", Weight: 1})
 
 		spark := widgets.NewSparkline()
 		spark.LineColor = ui.ColorGreen
@@ -321,7 +320,7 @@ func (a *App) updateCICDTabData() {
 
 		tab.Widgets = []ui.Drawable{summary, workflows, runs, history}
 		tab.Panels = []*widgets.Paragraph{summary}
-		tab.Tables = []*widgets.Table{workflows, runs}
+		tab.Tables = []*DataTable{workflows, runs}
 		tab.Sparklines = []*widgets.SparklineGroup{history}
 	}
 
@@ -368,10 +367,9 @@ func (a *App) updateCICDTabData() {
 
 	if len(tab.Tables) > 0 {
 		table := tab.Tables[0]
-		rows := [][]string{{"Repository", "Workflow", "Last run", "Success", "Mean", "When"}}
-		styles := map[int]ui.Style{0: headerStyle}
+		rows := make([]Row, 0, len(metrics.Workflows))
 
-		for i, workflow := range metrics.Workflows {
+		for _, workflow := range metrics.Workflows {
 			mean := "-"
 			if workflow.AverageDuration > 0 {
 				mean = workflow.AverageDuration.Round(time.Second).String()
@@ -381,61 +379,38 @@ func (a *App) updateCICDTabData() {
 				rate = fmt.Sprintf("%.0f%%", workflow.SuccessRate)
 			}
 
-			rows = append(rows, []string{
-				TruncateString(workflow.Repository, 20),
-				TruncateString(workflow.Name, 24),
-				string(orUnknown(workflow.LastRunStatus)),
-				rate,
-				mean,
-				FormatTime(workflow.LastRunTime),
-			})
-			styles[i+1] = cicdStatusStyle(workflow.LastRunStatus)
+			rows = append(rows, styledRow(cicdStatusStyle(workflow.LastRunStatus),
+				workflow.Repository, workflow.Name,
+				string(orUnknown(workflow.LastRunStatus)), rate, mean,
+				FormatTime(workflow.LastRunTime)))
 		}
 
-		if len(metrics.Workflows) == 0 {
-			rows = append(rows, []string{emptyLabel(metrics.Errors, "no workflows"), "-", "-", "-", "-", "-"})
-			styles[1] = subtleStyle
+		if len(rows) == 0 {
+			rows = noticeRow(6, emptyLabel(metrics.Errors, "no workflows"))
 		}
-
-		table.Rows = rows
-		table.RowStyles = styles
+		table.SetRows(rows)
 	}
 
 	if len(tab.Tables) > 1 {
 		table := tab.Tables[1]
-		rows := [][]string{{"Workflow", "Status", "Branch", "Trigger", "Duration", "When"}}
-		styles := map[int]ui.Style{0: headerStyle}
-		row := 1
+		rows := make([]Row, 0, 64)
 
 		for _, workflow := range metrics.Workflows {
 			for _, run := range workflow.RecentRuns {
-				if row > 60 {
-					break
-				}
 				duration := "-"
 				if run.Duration > 0 {
 					duration = run.Duration.Round(time.Second).String()
 				}
-				rows = append(rows, []string{
-					TruncateString(workflow.Name, 22),
-					string(run.Status),
-					TruncateString(run.Branch, 18),
-					TruncateString(run.Trigger, 10),
-					duration,
-					FormatTime(run.StartTime),
-				})
-				styles[row] = cicdStatusStyle(run.Status)
-				row++
+				rows = append(rows, styledRow(cicdStatusStyle(run.Status),
+					workflow.Name, string(run.Status), run.Branch,
+					run.Trigger, duration, FormatTime(run.StartTime)))
 			}
 		}
 
-		if row == 1 {
-			rows = append(rows, []string{emptyLabel(metrics.Errors, "no runs"), "-", "-", "-", "-", "-"})
-			styles[1] = subtleStyle
+		if len(rows) == 0 {
+			rows = noticeRow(6, emptyLabel(metrics.Errors, "no runs"))
 		}
-
-		table.Rows = rows
-		table.RowStyles = styles
+		table.SetRows(rows)
 	}
 
 	a.applyInfraSparkline(tab, func() ([]models.TimeSeriesPoint, error) {
@@ -452,16 +427,7 @@ func (a *App) setProviderUnconfigured(tab *Tab, provider, instructions string) {
 		tab.Panels[0].Text = provider + " is not configured.\n\n" + instructions
 	}
 	for _, table := range tab.Tables {
-		if len(table.Rows) > 0 {
-			header := table.Rows[0]
-			blank := make([]string, len(header))
-			for i := range blank {
-				blank[i] = "-"
-			}
-			blank[0] = "not configured"
-			table.Rows = [][]string{header, blank}
-			table.RowStyles = map[int]ui.Style{0: headerStyle, 1: subtleStyle}
-		}
+		table.SetRows(noticeRow(max(len(table.Columns), 1), "not configured"))
 	}
 }
 
@@ -534,14 +500,6 @@ func limitStrings(values []string, limit int) []string {
 	}
 	out := append([]string(nil), values[:limit]...)
 	return append(out, fmt.Sprintf("... and %d more", len(values)-limit))
-}
-
-// limitPods caps the pod table.
-func limitPods(pods []models.KubernetesPodMetrics, limit int) []models.KubernetesPodMetrics {
-	if len(pods) <= limit {
-		return pods
-	}
-	return pods[:limit]
 }
 
 func resourceStatusStyle(status models.ResourceStatus) ui.Style {

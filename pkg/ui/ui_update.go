@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,31 +31,62 @@ var (
 	subtleStyle = ui.NewStyle(ui.ColorClear)
 )
 
-// updateData refreshes every tab's widget state from the collectors and storage.
-// It performs no rendering; render draws the result.
+// updateData refreshes the widget state the visible tab needs.
+//
+// Only the active tab is refreshed. Rebuilding every tab each frame meant
+// formatting thousands of table rows and issuing a dozen SQLite queries every
+// second for views that were not on screen; on a cluster with 487 pods and 500
+// services that alone made the interface feel sluggish.
 func (a *App) updateData() {
-	a.updateSystemTabData()
-	a.updateHTTPTabData()
-	a.updateGitTabData()
-	a.updateHistoryTabData()
-	a.updateCloudTabData()
-	a.updateKubernetesTabData()
-	a.updateCICDTabData()
-	a.updateNotificationsTabData()
-	a.updatePluginsTabData()
+	switch a.activeTabName() {
+	case "System":
+		a.updateSystemTabData()
+	case "HTTP":
+		a.updateHTTPTabData()
+	case "Git":
+		a.updateGitTabData()
+	case "History":
+		a.updateHistoryTabData()
+	case "Cloud":
+		a.updateCloudTabData()
+	case "Kubernetes":
+		a.updateKubernetesTabData()
+	case "CI/CD":
+		a.updateCICDTabData()
+	case "Notifications":
+		a.updateNotificationsTabData()
+	case "Plugins":
+		a.updatePluginsTabData()
+	}
+
+	// The unread badge is shown on the tab bar from every tab, so it is refreshed
+	// regardless, but on its own slower cadence.
+	if a.notificationsRefresh.ready() {
+		a.updateTabBadges()
+	}
 }
 
-// newTable builds a bordered table with the given header row.
-func newTable(title string, header []string, widths []int) *widgets.Table {
-	table := widgets.NewTable()
-	table.Title = title
-	table.RowSeparator = false
-	table.BorderStyle.Fg = ui.ColorCyan
-	table.TextStyle = normalStyle
-	table.ColumnWidths = widths
-	table.Rows = [][]string{header}
-	table.RowStyles = map[int]ui.Style{0: headerStyle}
+// newTable builds a bordered table.
+func newTable(title string, columns ...Column) *DataTable {
+	table := NewDataTable(title)
+	table.Columns = columns
+	table.RowStyle = normalStyle
 	return table
+}
+
+// textRow builds an unstyled row.
+func textRow(cells ...string) Row { return Row{Cells: cells} }
+
+// styledRow builds a row with an explicit style.
+func styledRow(style ui.Style, cells ...string) Row {
+	return Row{Cells: cells, Style: &style}
+}
+
+// noticeRow renders a single subdued line in place of data.
+func noticeRow(columns int, text string) []Row {
+	cells := make([]string, columns)
+	cells[0] = text
+	return []Row{styledRow(subtleStyle, cells...)}
 }
 
 // newPanel builds a bordered wrapping paragraph.
@@ -101,14 +133,17 @@ func (a *App) updateSystemTabData() {
 		diskChart.BorderStyle.Fg = ui.ColorCyan
 
 		processes := newTable("Top processes",
-			[]string{"PID", "CPU%", "MEM%", "RSS", "Command"},
-			[]int{8, 8, 8, 12, 0})
+			Column{Title: "PID", Width: 7, Align: AlignRight},
+			Column{Title: "CPU%", Width: 6, Align: AlignRight},
+			Column{Title: "MEM%", Width: 6, Align: AlignRight},
+			Column{Title: "RSS", Width: 10, Align: AlignRight},
+			Column{Title: "COMMAND", Weight: 1})
 
 		tab.Widgets = []ui.Drawable{cpuGauge, memGauge, cpuHistory, diskChart, processes}
 		tab.Gauges = []*widgets.Gauge{cpuGauge, memGauge}
 		tab.Sparklines = []*widgets.SparklineGroup{cpuHistory}
 		tab.BarCharts = []*widgets.BarChart{diskChart}
-		tab.Tables = []*widgets.Table{processes}
+		tab.Tables = []*DataTable{processes}
 	}
 
 	if a.SystemCollector == nil {
@@ -148,6 +183,11 @@ func (a *App) updateSystemTabData() {
 		colors := make([]ui.Color, 0, len(metrics.Disk.Filesystems))
 
 		for _, fs := range metrics.Disk.Filesystems {
+			// System and pseudo volumes crowd out the real ones and their long
+			// paths collide into an unreadable strip of labels.
+			if isPseudoFilesystem(fs.MountPoint) {
+				continue
+			}
 			data = append(data, fs.UsagePercent)
 			labels = append(labels, shortMountPoint(fs.MountPoint))
 			colors = append(colors, usageColor(fs.UsagePercent))
@@ -162,26 +202,22 @@ func (a *App) updateSystemTabData() {
 
 	if len(tab.Tables) > 0 {
 		table := tab.Tables[0]
-		rows := [][]string{{"PID", "CPU%", "MEM%", "RSS", "Command"}}
-		styles := map[int]ui.Style{0: headerStyle}
+		rows := make([]Row, 0, len(metrics.Processes))
 
-		for i, proc := range metrics.Processes {
-			rows = append(rows, []string{
-				fmt.Sprintf("%d", proc.PID),
+		for _, proc := range metrics.Processes {
+			rows = append(rows, styledRow(usageStyle(proc.CPUPercent),
+				strconv.Itoa(int(proc.PID)),
 				fmt.Sprintf("%.1f", proc.CPUPercent),
 				fmt.Sprintf("%.1f", proc.MemoryPercent),
 				FormatBytes(proc.MemoryBytes),
-				TruncateString(proc.Command, 80),
-			})
-			styles[i+1] = usageStyle(proc.CPUPercent)
+				proc.Command,
+			))
 		}
 
-		if len(metrics.Processes) == 0 {
-			rows = append(rows, []string{"-", "-", "-", "-", "collecting..."})
+		if len(rows) == 0 {
+			rows = noticeRow(5, "collecting…")
 		}
-
-		table.Rows = rows
-		table.RowStyles = styles
+		table.SetRows(rows)
 	}
 }
 
@@ -194,8 +230,12 @@ func (a *App) updateHTTPTabData() {
 
 	if len(tab.Widgets) == 0 {
 		endpoints := newTable("Endpoints",
-			[]string{"Endpoint", "Status", "Response", "Availability", "Last check"},
-			[]int{34, 10, 12, 14, 0})
+			Column{Title: "ENDPOINT", Weight: 3},
+			Column{Title: "STATUS", Width: 7, Align: AlignRight},
+			Column{Title: "RESPONSE", Width: 10, Align: AlignRight},
+			Column{Title: "AVAIL", Width: 8, Align: AlignRight},
+			Column{Title: "CHECKS", Width: 7, Align: AlignRight},
+			Column{Title: "LAST CHECK", Weight: 1})
 
 		respLine := widgets.NewSparkline()
 		respLine.LineColor = ui.ColorGreen
@@ -212,7 +252,7 @@ func (a *App) updateHTTPTabData() {
 		details := newPanel("Details")
 
 		tab.Widgets = []ui.Drawable{endpoints, respHistory, availHistory, details}
-		tab.Tables = []*widgets.Table{endpoints}
+		tab.Tables = []*DataTable{endpoints}
 		tab.Sparklines = []*widgets.SparklineGroup{respHistory, availHistory}
 		tab.Panels = []*widgets.Paragraph{details}
 	}
@@ -231,10 +271,9 @@ func (a *App) updateHTTPTabData() {
 
 	if len(tab.Tables) > 0 {
 		table := tab.Tables[0]
-		rows := [][]string{{"Endpoint", "Status", "Response", "Availability", "Last check"}}
-		styles := map[int]ui.Style{0: headerStyle}
+		rows := make([]Row, 0, len(names))
 
-		for i, name := range names {
+		for _, name := range names {
 			metric := metrics[name]
 
 			status := "-"
@@ -242,7 +281,7 @@ func (a *App) updateHTTPTabData() {
 			case metric.Error != "":
 				status = "ERR"
 			case metric.StatusCode > 0:
-				status = fmt.Sprintf("%d", metric.StatusCode)
+				status = strconv.Itoa(metric.StatusCode)
 			}
 
 			lastCheck := "-"
@@ -252,33 +291,31 @@ func (a *App) updateHTTPTabData() {
 
 			// Availability is a real percentage over the collector's rolling
 			// window, not a rendering of the boolean IsUp field.
-			availability := "-"
+			availability, checks := "-", "-"
 			if metric.ChecksInWindow > 0 {
-				availability = fmt.Sprintf("%.1f%% (%d)", metric.Availability, metric.ChecksInWindow)
+				availability = fmt.Sprintf("%.0f%%", metric.Availability)
+				checks = strconv.Itoa(metric.ChecksInWindow)
 			}
 
-			rows = append(rows, []string{
-				TruncateString(displayName(name, metric.URL), 32),
+			style := badStyle
+			if metric.IsUp {
+				style = goodStyle
+			}
+
+			rows = append(rows, styledRow(style,
+				displayName(name, metric.URL),
 				status,
 				formatResponseTime(metric),
 				availability,
+				checks,
 				lastCheck,
-			})
-
-			if metric.IsUp {
-				styles[i+1] = goodStyle
-			} else {
-				styles[i+1] = badStyle
-			}
+			))
 		}
 
-		if len(names) == 0 {
-			rows = append(rows, []string{"no endpoints configured", "-", "-", "-", "-"})
-			styles[1] = subtleStyle
+		if len(rows) == 0 {
+			rows = noticeRow(6, "no endpoints configured")
 		}
-
-		table.Rows = rows
-		table.RowStyles = styles
+		table.SetRows(rows)
 	}
 
 	// The sparklines and the detail panel follow the first endpoint by name.
@@ -333,9 +370,14 @@ func (a *App) updateGitTabData() {
 	if len(tab.Widgets) == 0 {
 		summary := newPanel("Repository")
 
-		changes := newTable("Changed files", []string{"Status", "File"}, []int{10, 0})
-		commits := newTable("Recent commits", []string{"Commit", "Author", "When", "Message"},
-			[]int{10, 18, 12, 0})
+		changes := newTable("Changed files",
+			Column{Title: "ST", Width: 4},
+			Column{Title: "FILE", Weight: 1})
+		commits := newTable("Recent commits",
+			Column{Title: "COMMIT", Width: 9},
+			Column{Title: "AUTHOR", Width: 18},
+			Column{Title: "WHEN", Width: 12},
+			Column{Title: "MESSAGE", Weight: 1})
 
 		branches := widgets.NewList()
 		branches.Title = "Branches"
@@ -345,7 +387,7 @@ func (a *App) updateGitTabData() {
 
 		tab.Widgets = []ui.Drawable{summary, changes, commits, branches}
 		tab.Panels = []*widgets.Paragraph{summary}
-		tab.Tables = []*widgets.Table{changes, commits}
+		tab.Tables = []*DataTable{changes, commits}
 		tab.Lists = []*widgets.List{branches}
 	}
 
@@ -392,30 +434,26 @@ func (a *App) updateGitTabData() {
 	// Changed files are listed individually rather than summarised as a count.
 	if len(tab.Tables) > 0 {
 		table := tab.Tables[0]
-		rows := [][]string{{"Status", "File"}}
-		styles := map[int]ui.Style{0: headerStyle}
+		rows := make([]Row, 0, len(metrics.ChangedFiles))
 
-		for i, change := range metrics.ChangedFiles {
-			rows = append(rows, []string{change.Status, change.Path})
-			styles[i+1] = gitStatusStyle(change.Status)
+		for _, change := range metrics.ChangedFiles {
+			rows = append(rows, styledRow(gitStatusStyle(change.Status),
+				strings.TrimSpace(change.Status), change.Path))
 		}
 
-		if len(metrics.ChangedFiles) == 0 {
+		if len(rows) == 0 {
 			label := "working tree clean"
 			if !metrics.IsRepository {
 				label = "-"
 			}
-			rows = append(rows, []string{"", label})
-			styles[1] = subtleStyle
+			rows = noticeRow(2, label)
 		}
-
-		table.Rows = rows
-		table.RowStyles = styles
+		table.SetRows(rows)
 	}
 
 	if len(tab.Tables) > 1 {
 		table := tab.Tables[1]
-		rows := [][]string{{"Commit", "Author", "When", "Message"}}
+		rows := make([]Row, 0, len(metrics.CommitHistory))
 
 		for _, commit := range metrics.CommitHistory {
 			hash := commit.Hash
@@ -426,19 +464,13 @@ func (a *App) updateGitTabData() {
 			if !commit.Timestamp.IsZero() {
 				when = FormatTime(commit.Timestamp)
 			}
-			rows = append(rows, []string{
-				hash,
-				TruncateString(commit.Author, 16),
-				when,
-				TruncateString(commit.Message, 80),
-			})
+			rows = append(rows, textRow(hash, commit.Author, when, commit.Message))
 		}
 
-		if len(metrics.CommitHistory) == 0 {
-			rows = append(rows, []string{"-", "-", "-", "no commits"})
+		if len(rows) == 0 {
+			rows = noticeRow(4, "no commits")
 		}
-
-		table.Rows = rows
+		table.SetRows(rows)
 	}
 
 	// Branches come from git for-each-ref. The previous implementation appended
@@ -492,6 +524,12 @@ func (a *App) updateHistoryTabData() {
 			plot.Data = nil
 			plot.Title = strings.TrimSuffix(plot.Title, " - no storage") + " - no storage"
 		}
+		return
+	}
+
+	// Each plot is a windowed SQLite query over up to 200 points. Re-running them
+	// every frame is wasted work when the underlying samples arrive far less often.
+	if !a.historyRefresh.ready() {
 		return
 	}
 
@@ -670,12 +708,35 @@ func gitStatusStyle(status string) ui.Style {
 	}
 }
 
-// shortMountPoint trims a mount point to fit a bar chart label.
+// isPseudoFilesystem reports whether a mount point is a system volume rather
+// than storage an operator cares about.
+func isPseudoFilesystem(path string) bool {
+	for _, prefix := range []string{
+		"/dev", "/System/Volumes", "/private/var/vm", "/proc", "/sys", "/run",
+		"/snap", "/var/lib/docker", "/System/Library",
+	} {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// shortMountPoint trims a mount point to a readable bar-chart label, keeping the
+// final path element rather than an arbitrary tail of characters.
 func shortMountPoint(path string) string {
 	if len(path) <= 10 {
 		return path
 	}
-	return ".." + path[len(path)-8:]
+
+	if idx := strings.LastIndex(path, "/"); idx > 0 && idx < len(path)-1 {
+		last := path[idx+1:]
+		if len(last) <= 10 {
+			return last
+		}
+		return last[:9] + "…"
+	}
+	return path[:9] + "…"
 }
 
 // displayName prefers the configured endpoint name, falling back to its URL.

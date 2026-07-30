@@ -155,6 +155,73 @@ func (a *App) annotationFormVisible() bool {
 	return a.AnnotationForm != nil && a.annotation.Field >= 0 && a.addingAnnotation
 }
 
+// rowSpec is one row in a stack: either a fixed height or a share of the
+// leftover space.
+type rowSpec struct {
+	fixed  int
+	weight int
+}
+
+// fixedRows requests exactly n rows.
+func fixedRows(n int) rowSpec { return rowSpec{fixed: n} }
+
+// flexRows requests a share of whatever height remains.
+func flexRows(weight int) rowSpec { return rowSpec{weight: max(weight, 1)} }
+
+// stackRows divides r vertically, honouring fixed heights first and sharing the
+// remainder between the flexible rows.
+//
+// Proportional splits alone made small widgets grow absurdly on a tall terminal:
+// a gauge given 18% of 40 rows became a seven-row block of solid colour.
+func stackRows(rect image.Rectangle, specs ...rowSpec) []image.Rectangle {
+	out := make([]image.Rectangle, len(specs))
+	if len(specs) == 0 || rect.Dy() <= 0 {
+		return out
+	}
+
+	remaining := rect.Dy()
+	totalWeight := 0
+	for _, spec := range specs {
+		if spec.fixed > 0 {
+			remaining -= spec.fixed
+		} else {
+			totalWeight += spec.weight
+		}
+	}
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	heights := make([]int, len(specs))
+	granted, lastFlex := 0, -1
+	for i, spec := range specs {
+		if spec.fixed > 0 {
+			heights[i] = spec.fixed
+			continue
+		}
+		lastFlex = i
+		if totalWeight > 0 {
+			heights[i] = remaining * spec.weight / totalWeight
+			granted += heights[i]
+		}
+	}
+	if lastFlex >= 0 {
+		heights[lastFlex] += remaining - granted
+	}
+
+	y := rect.Min.Y
+	for i, height := range heights {
+		if height < 0 {
+			height = 0
+		}
+		bottom := min(y+height, rect.Max.Y)
+		out[i] = image.Rect(rect.Min.X, y, rect.Max.X, bottom)
+		y = bottom
+	}
+
+	return out
+}
+
 // splitRows divides r vertically in proportion to weights. It always returns
 // len(weights) rectangles; those that do not fit are empty, so callers can index
 // the result unconditionally.

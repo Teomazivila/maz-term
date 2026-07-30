@@ -68,8 +68,6 @@ func TestProviderTabsWithoutCollectorSaySo(t *testing.T) {
 	require.Nil(t, app.KubernetesCollector)
 	require.Nil(t, app.CICDCollector)
 
-	app.updateData()
-
 	tests := []struct {
 		tab      string
 		wantText []string
@@ -81,6 +79,10 @@ func TestProviderTabsWithoutCollectorSaySo(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.tab, func(t *testing.T) {
+			// Only the active tab is refreshed, so each one is selected in turn.
+			app.selectTabByName(t, tt.tab)
+			app.updateData()
+
 			tab := app.getTabByName(tt.tab)
 			require.NotNil(t, tab)
 			require.NotEmpty(t, tab.Panels)
@@ -103,7 +105,6 @@ func TestProviderTabsRenderWithoutData(t *testing.T) {
 	app.TermWidth, app.TermHeight = 140, 44
 	app.StatusBar = widgets.NewParagraph()
 	app.TabBar = widgets.NewTabPane(app.getTabNames()...)
-	app.updateData()
 
 	for i, tab := range app.Tabs {
 		t.Run(tab.Name, func(t *testing.T) {

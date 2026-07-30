@@ -183,9 +183,41 @@ type App struct {
 	PluginMetrics  []models.Metric
 	SelectedPlugin int
 
+	// Refresh throttles. Storage-backed and remote-backed views are far more
+	// expensive than a redraw, so they are refreshed on their own cadence rather
+	// than once per frame.
+	historyRefresh       throttle
+	notificationsRefresh throttle
+	pluginRefresh        throttle
+
 	// Status
 	statusMessage string
 	quit          bool
+}
+
+// throttle rate-limits an expensive refresh.
+type throttle struct {
+	every time.Duration
+	last  time.Time
+}
+
+// ready reports whether the interval has elapsed, recording the time when it has.
+func (t *throttle) ready() bool {
+	now := time.Now()
+	if t.every <= 0 {
+		t.every = time.Second
+	}
+	if now.Sub(t.last) < t.every {
+		return false
+	}
+	t.last = now
+	return true
+}
+
+// force makes the next ready call return true, for when the operator has changed
+// something and expects an immediate refresh.
+func (t *throttle) force() {
+	t.last = time.Time{}
 }
 
 // Tab represents one dashboard tab and the widgets it owns.
@@ -194,7 +226,7 @@ type Tab struct {
 	Widgets    []ui.Drawable
 	Panels     []*widgets.Paragraph
 	Gauges     []*widgets.Gauge
-	Tables     []*widgets.Table
+	Tables     []*DataTable
 	Sparklines []*widgets.SparklineGroup
 	BarCharts  []*widgets.BarChart
 	Plots      []*widgets.Plot

@@ -180,17 +180,20 @@ func (a *App) updatePluginsTabData() {
 
 	a.drainPluginEvents()
 
-	// Collecting here keeps plugin execution on the render goroutine, bounded by
-	// the manager's per-plugin timeout and panic containment.
-	metrics, notifications := a.PluginManager.CollectAll(context.Background())
-	a.PluginMetrics = metrics
+	// Collecting runs on the render goroutine, bounded by the manager's per-plugin
+	// timeout and panic containment, so it must not happen every frame: a plugin
+	// taking even 50ms would visibly stutter the interface.
+	if a.pluginRefresh.ready() {
+		metrics, notifications := a.PluginManager.CollectAll(context.Background())
+		a.PluginMetrics = metrics
 
-	for _, notification := range notifications {
-		if a.Storage == nil {
-			break
-		}
-		if err := a.Storage.AddNotification(notification); err != nil {
-			slog.Default().Error("failed to store plugin notification", "error", err)
+		for _, notification := range notifications {
+			if a.Storage == nil {
+				break
+			}
+			if err := a.Storage.AddNotification(notification); err != nil {
+				slog.Default().Error("failed to store plugin notification", "error", err)
+			}
 		}
 	}
 
