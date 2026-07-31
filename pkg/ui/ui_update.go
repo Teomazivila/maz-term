@@ -106,31 +106,23 @@ func (a *App) updateSystemTabData() {
 	}
 
 	if len(tab.Widgets) == 0 {
-		cpuGauge := widgets.NewGauge()
-		cpuGauge.Title = "CPU"
-		cpuGauge.BarColor = ui.ColorRed
-		cpuGauge.BorderStyle.Fg = ui.ColorCyan
+		cpuMeter := NewMeter("CPU")
+		cpuMeter.Label = "cpu"
 
-		memGauge := widgets.NewGauge()
-		memGauge.Title = "Memory"
-		memGauge.BarColor = ui.ColorBlue
-		memGauge.BorderStyle.Fg = ui.ColorCyan
+		memMeter := NewMeter("Memory")
+		memMeter.Label = "mem"
 
-		spark := widgets.NewSparkline()
-		spark.LineColor = ui.ColorRed
-		cpuHistory := widgets.NewSparklineGroup(spark)
-		cpuHistory.Title = "CPU history"
-		cpuHistory.BorderStyle.Fg = ui.ColorCyan
+		cpuHistory := NewSparkline("CPU history")
+		cpuHistory.Unit = "%"
+		// Left to auto-scale. Pinning the axis at 100 confines a typical 15%
+		// reading to the bottom fifth of the plot and hides its shape; the axis
+		// label states the scale, so nothing is overstated.
+		cpuHistory.ColorByThreshold = true
 
-		diskChart := widgets.NewBarChart()
-		diskChart.Title = "Disk usage %"
-		diskChart.BarWidth = 8
-		diskChart.BarGap = 1
-		diskChart.BarColors = []ui.Color{ui.ColorGreen}
-		diskChart.LabelStyles = []ui.Style{normalStyle}
-		diskChart.NumStyles = []ui.Style{ui.NewStyle(ui.ColorBlack)}
-		diskChart.NumFormatter = func(f float64) string { return fmt.Sprintf("%.0f", f) }
-		diskChart.BorderStyle.Fg = ui.ColorCyan
+		diskChart := NewBarChart("Disk usage")
+		diskChart.Unit = "%"
+		diskChart.Max = 100
+		diskChart.ColorByThreshold = true
 
 		processes := newTable("Top processes",
 			Column{Title: "PID", Width: 7, Align: AlignRight},
@@ -139,10 +131,10 @@ func (a *App) updateSystemTabData() {
 			Column{Title: "RSS", Width: 10, Align: AlignRight},
 			Column{Title: "COMMAND", Weight: 1})
 
-		tab.Widgets = []ui.Drawable{cpuGauge, memGauge, cpuHistory, diskChart, processes}
-		tab.Gauges = []*widgets.Gauge{cpuGauge, memGauge}
-		tab.Sparklines = []*widgets.SparklineGroup{cpuHistory}
-		tab.BarCharts = []*widgets.BarChart{diskChart}
+		tab.Widgets = []ui.Drawable{cpuMeter, memMeter, cpuHistory, diskChart, processes}
+		tab.Meters = []*Meter{cpuMeter, memMeter}
+		tab.Sparklines = []*Sparkline{cpuHistory}
+		tab.BarCharts = []*BarChart{diskChart}
 		tab.Tables = []*DataTable{processes}
 	}
 
@@ -151,36 +143,35 @@ func (a *App) updateSystemTabData() {
 	}
 	metrics := a.SystemCollector.GetLatestMetrics()
 
-	if len(tab.Gauges) > 0 {
-		gauge := tab.Gauges[0]
-		gauge.Percent = clampPercent(metrics.CPU.UsagePercent)
-		gauge.Label = fmt.Sprintf("%.1f%%  load %.2f %.2f %.2f",
-			metrics.CPU.UsagePercent,
+	if len(tab.Meters) > 0 {
+		meter := tab.Meters[0]
+		meter.Percent = metrics.CPU.UsagePercent
+		meter.Detail = fmt.Sprintf("load %.2f %.2f %.2f",
 			metrics.CPU.LoadAverage.Load1,
 			metrics.CPU.LoadAverage.Load5,
 			metrics.CPU.LoadAverage.Load15)
+		if cores := len(metrics.CPU.CoreUsage); cores > 0 {
+			meter.Detail += fmt.Sprintf("  %d cores", cores)
+		}
 	}
 
-	if len(tab.Gauges) > 1 {
-		gauge := tab.Gauges[1]
-		gauge.Percent = clampPercent(metrics.Memory.UsagePercent)
-		gauge.Label = fmt.Sprintf("%.1f%%  %s / %s",
-			metrics.Memory.UsagePercent,
-			FormatBytes(metrics.Memory.Used),
-			FormatBytes(metrics.Memory.Total))
+	if len(tab.Meters) > 1 {
+		meter := tab.Meters[1]
+		meter.Percent = metrics.Memory.UsagePercent
+		meter.Detail = fmt.Sprintf("%s / %s",
+			FormatBytes(metrics.Memory.Used), FormatBytes(metrics.Memory.Total))
+		if metrics.Memory.SwapTotal > 0 {
+			meter.Detail += fmt.Sprintf("  swap %s", FormatBytes(metrics.Memory.SwapUsed))
+		}
 	}
 
-	if len(tab.Sparklines) > 0 && len(tab.Sparklines[0].Sparklines) > 0 {
-		line := tab.Sparklines[0].Sparklines[0]
-		line.Data = appendCapped(line.Data, metrics.CPU.UsagePercent, sparklinePoints)
-		line.Title = fmt.Sprintf("CPU %.1f%%", metrics.CPU.UsagePercent)
+	if len(tab.Sparklines) > 0 {
+		tab.Sparklines[0].Append(metrics.CPU.UsagePercent, sparklinePoints)
 	}
 
 	if len(tab.BarCharts) > 0 {
 		chart := tab.BarCharts[0]
-		data := make([]float64, 0, len(metrics.Disk.Filesystems))
-		labels := make([]string, 0, len(metrics.Disk.Filesystems))
-		colors := make([]ui.Color, 0, len(metrics.Disk.Filesystems))
+		bars := make([]Bar, 0, len(metrics.Disk.Filesystems))
 
 		for _, fs := range metrics.Disk.Filesystems {
 			// System and pseudo volumes crowd out the real ones and their long
@@ -188,16 +179,14 @@ func (a *App) updateSystemTabData() {
 			if isPseudoFilesystem(fs.MountPoint) {
 				continue
 			}
-			data = append(data, fs.UsagePercent)
-			labels = append(labels, shortMountPoint(fs.MountPoint))
-			colors = append(colors, usageColor(fs.UsagePercent))
+			bars = append(bars, Bar{
+				Label:  shortMountPoint(fs.MountPoint),
+				Value:  fs.UsagePercent,
+				Detail: fmt.Sprintf("%.0f%%", fs.UsagePercent),
+			})
 		}
 
-		chart.Data = data
-		chart.Labels = labels
-		if len(colors) > 0 {
-			chart.BarColors = colors
-		}
+		chart.Bars = bars
 	}
 
 	if len(tab.Tables) > 0 {
@@ -237,23 +226,20 @@ func (a *App) updateHTTPTabData() {
 			Column{Title: "CHECKS", Width: 7, Align: AlignRight},
 			Column{Title: "LAST CHECK", Weight: 1})
 
-		respLine := widgets.NewSparkline()
-		respLine.LineColor = ui.ColorGreen
-		respHistory := widgets.NewSparklineGroup(respLine)
-		respHistory.Title = "Response time"
-		respHistory.BorderStyle.Fg = ui.ColorCyan
+		respHistory := NewSparkline("Response time")
+		respHistory.Unit = "ms"
+		respHistory.LineColor = ui.ColorGreen
 
-		availLine := widgets.NewSparkline()
-		availLine.LineColor = ui.ColorBlue
-		availHistory := widgets.NewSparklineGroup(availLine)
-		availHistory.Title = "Availability"
-		availHistory.BorderStyle.Fg = ui.ColorCyan
+		availHistory := NewSparkline("Availability")
+		availHistory.Unit = "%"
+		availHistory.Max = 100
+		availHistory.LineColor = ui.ColorBlue
 
 		details := newPanel("Details")
 
 		tab.Widgets = []ui.Drawable{endpoints, respHistory, availHistory, details}
 		tab.Tables = []*DataTable{endpoints}
-		tab.Sparklines = []*widgets.SparklineGroup{respHistory, availHistory}
+		tab.Sparklines = []*Sparkline{respHistory, availHistory}
 		tab.Panels = []*widgets.Paragraph{details}
 	}
 
@@ -329,18 +315,16 @@ func (a *App) updateHTTPTabData() {
 
 	primary := metrics[names[0]]
 
-	if len(tab.Sparklines) > 0 && len(tab.Sparklines[0].Sparklines) > 0 {
-		group := tab.Sparklines[0]
-		group.Title = "Response time - " + TruncateString(names[0], 24)
-		line := group.Sparklines[0]
-		line.Data = appendCapped(line.Data, float64(primary.ResponseTime.Milliseconds()), sparklinePoints)
+	if len(tab.Sparklines) > 0 {
+		spark := tab.Sparklines[0]
+		spark.Title = "Response time - " + TruncateString(names[0], 24)
+		spark.Append(float64(primary.ResponseTime.Milliseconds()), sparklinePoints)
 	}
 
-	if len(tab.Sparklines) > 1 && len(tab.Sparklines[1].Sparklines) > 0 {
-		group := tab.Sparklines[1]
-		group.Title = "Availability - " + TruncateString(names[0], 24)
-		line := group.Sparklines[0]
-		line.Data = appendCapped(line.Data, primary.Availability, sparklinePoints)
+	if len(tab.Sparklines) > 1 {
+		spark := tab.Sparklines[1]
+		spark.Title = "Availability - " + TruncateString(names[0], 24)
+		spark.Append(primary.Availability, sparklinePoints)
 	}
 
 	if len(tab.Panels) > 0 {

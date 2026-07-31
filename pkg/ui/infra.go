@@ -34,16 +34,13 @@ func (a *App) updateCloudTabData() {
 			Column{Title: "REGION", Width: 14},
 			Column{Title: "STATE", Weight: 1})
 
-		spark := widgets.NewSparkline()
-		spark.LineColor = ui.ColorGreen
-		history := widgets.NewSparklineGroup(spark)
-		history.Title = "Running instances"
-		history.BorderStyle.Fg = ui.ColorCyan
+		history := NewSparkline("Running instances")
+		history.LineColor = ui.ColorGreen
 
 		tab.Widgets = []ui.Drawable{summary, instances, storage, history}
 		tab.Panels = []*widgets.Paragraph{summary}
 		tab.Tables = []*DataTable{instances, storage}
-		tab.Sparklines = []*widgets.SparklineGroup{history}
+		tab.Sparklines = []*Sparkline{history}
 	}
 
 	if a.CloudCollector == nil {
@@ -161,16 +158,13 @@ func (a *App) updateKubernetesTabData() {
 			Column{Title: "PODS", Width: 6, Align: AlignRight},
 			Column{Title: "VERSION", Weight: 1})
 
-		spark := widgets.NewSparkline()
-		spark.LineColor = ui.ColorBlue
-		history := widgets.NewSparklineGroup(spark)
-		history.Title = "Running pods"
-		history.BorderStyle.Fg = ui.ColorCyan
+		history := NewSparkline("Running pods")
+		history.LineColor = ui.ColorBlue
 
 		tab.Widgets = []ui.Drawable{summary, pods, nodes, history}
 		tab.Panels = []*widgets.Paragraph{summary}
 		tab.Tables = []*DataTable{pods, nodes}
-		tab.Sparklines = []*widgets.SparklineGroup{history}
+		tab.Sparklines = []*Sparkline{history}
 	}
 
 	if a.KubernetesCollector == nil {
@@ -312,16 +306,15 @@ func (a *App) updateCICDTabData() {
 			Column{Title: "DURATION", Width: 9, Align: AlignRight},
 			Column{Title: "WHEN", Weight: 1})
 
-		spark := widgets.NewSparkline()
-		spark.LineColor = ui.ColorGreen
-		history := widgets.NewSparklineGroup(spark)
-		history.Title = "Success rate %"
-		history.BorderStyle.Fg = ui.ColorCyan
+		history := NewSparkline("Success rate")
+		history.Unit = "%"
+		history.Max = 100
+		history.LineColor = ui.ColorGreen
 
 		tab.Widgets = []ui.Drawable{summary, workflows, runs, history}
 		tab.Panels = []*widgets.Paragraph{summary}
 		tab.Tables = []*DataTable{workflows, runs}
-		tab.Sparklines = []*widgets.SparklineGroup{history}
+		tab.Sparklines = []*Sparkline{history}
 	}
 
 	if a.CICDCollector == nil {
@@ -433,7 +426,7 @@ func (a *App) setProviderUnconfigured(tab *Tab, provider, instructions string) {
 
 // applyInfraSparkline loads a persisted summary series into a tab's sparkline.
 func (a *App) applyInfraSparkline(tab *Tab, load func() ([]models.TimeSeriesPoint, error)) {
-	if a.Storage == nil || len(tab.Sparklines) == 0 || len(tab.Sparklines[0].Sparklines) == 0 {
+	if a.Storage == nil || len(tab.Sparklines) == 0 {
 		return
 	}
 
@@ -446,7 +439,7 @@ func (a *App) applyInfraSparkline(tab *Tab, load func() ([]models.TimeSeriesPoin
 	for _, point := range points {
 		values = append(values, point.Value)
 	}
-	tab.Sparklines[0].Sparklines[0].Data = values
+	tab.Sparklines[0].Data = values
 }
 
 // layoutProviderTab arranges a provider tab: summary beside the primary table,

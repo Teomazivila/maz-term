@@ -225,10 +225,10 @@ type Tab struct {
 	Name       string
 	Widgets    []ui.Drawable
 	Panels     []*widgets.Paragraph
-	Gauges     []*widgets.Gauge
+	Meters     []*Meter
 	Tables     []*DataTable
-	Sparklines []*widgets.SparklineGroup
-	BarCharts  []*widgets.BarChart
+	Sparklines []*Sparkline
+	BarCharts  []*BarChart
 	Plots      []*widgets.Plot
 	Lists      []*widgets.List
 	HasUnread  bool
