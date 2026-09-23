@@ -23,3 +23,17 @@ go.work.sum
 
 # env file
 .env
+
+# Local configuration may contain host-specific paths; secrets belong in the
+# environment, never in a file. Ship config.example.yaml instead.
+config.yaml
+
+# Build output
+/maz-term
+/maz-term.exe
+/dist/
+coverage.out
+coverage.html
+
+# Compiled plugins
+plugins/

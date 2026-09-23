@@ -4,272 +4,258 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/Teomazivila/maz-term/pkg/models"
-	"github.com/shirou/gopsutil/v3/cpu"
-	"github.com/shirou/gopsutil/v3/disk"
-	"github.com/shirou/gopsutil/v3/load"
-	"github.com/shirou/gopsutil/v3/mem"
-	"github.com/shirou/gopsutil/v3/net"
+	"github.com/shirou/gopsutil/v4/cpu"
+	"github.com/shirou/gopsutil/v4/disk"
+	"github.com/shirou/gopsutil/v4/load"
+	"github.com/shirou/gopsutil/v4/mem"
+	"github.com/shirou/gopsutil/v4/net"
+	"github.com/shirou/gopsutil/v4/process"
 )
 
-// Subscriber represents a subscription with context for cleanup
-type Subscriber struct {
-	ch     chan models.SystemMetrics
-	ctx    context.Context
-	cancel context.CancelFunc
-}
+const (
+	// topProcessCount is how many of the highest-CPU processes are reported.
+	topProcessCount = 15
 
-// SystemMetricsCollector collects system metrics
+	// processInterval is how often the process table is refreshed.
+	//
+	// Enumerating every process costs one or more syscalls per process, which on
+	// a busy machine takes far longer than a dashboard refresh. Sampling it on
+	// the main path blocked the whole cycle, so CPU, memory and disk were never
+	// recorded at all. It now runs on its own slower cadence and the last result
+	// is served from cache.
+	processInterval = 10 * time.Second
+
+	// processTimeout bounds one process sweep.
+	processTimeout = 15 * time.Second
+)
+
+// SystemMetricsCollector collects local system metrics.
 type SystemMetricsCollector struct {
 	*BaseCollector
-	metrics     models.SystemMetrics
-	mutex       sync.RWMutex
-	subscribers map[string]*Subscriber
-	subMutex    sync.RWMutex
+
+	mu      sync.RWMutex
+	metrics models.SystemMetrics
+
+	// processes is refreshed by its own sampler, independently of the main
+	// collection cycle.
+	procMu    sync.RWMutex
+	processes []models.ProcessMetrics
+
+	procOnce   sync.Once
+	procCancel context.CancelFunc
+	procDone   chan struct{}
+
+	subscribers *broadcaster[models.SystemMetrics]
 }
 
-// NewSystemMetricsCollector creates a new system metrics collector
+// NewSystemMetricsCollector creates a new system metrics collector.
 func NewSystemMetricsCollector() *SystemMetricsCollector {
 	return &SystemMetricsCollector{
 		BaseCollector: NewBaseCollector("system_metrics"),
-		metrics:       models.SystemMetrics{},
-		subscribers:   make(map[string]*Subscriber),
+		subscribers:   newBroadcaster[models.SystemMetrics](),
+		procDone:      make(chan struct{}),
 	}
 }
 
-// Collect gathers system metrics
-func (c *SystemMetricsCollector) Collect(ctx context.Context) (interface{}, error) {
-	// Gather all metrics in parallel
-	var wg sync.WaitGroup
-	var cpuErr, memErr, diskErr, networkErr error
+// cachedProcesses returns the most recent process sample.
+func (c *SystemMetricsCollector) cachedProcesses() []models.ProcessMetrics {
+	c.procMu.RLock()
+	defer c.procMu.RUnlock()
+	return c.processes
+}
 
-	// Initialize the metrics
-	metrics := models.SystemMetrics{
-		CollectedAt: time.Now(),
+// startProcessSampler runs the process sweep on its own schedule. It samples once
+// immediately so the table populates without waiting a full interval.
+func (c *SystemMetricsCollector) startProcessSampler(ctx context.Context) {
+	c.procOnce.Do(func() {
+		sampleCtx, cancel := context.WithCancel(ctx)
+		c.procCancel = cancel
+
+		go func() {
+			defer close(c.procDone)
+
+			ticker := time.NewTicker(processInterval)
+			defer ticker.Stop()
+
+			for {
+				c.sampleProcesses(sampleCtx)
+
+				select {
+				case <-ticker.C:
+				case <-sampleCtx.Done():
+					return
+				}
+			}
+		}()
+	})
+}
+
+// sampleProcesses refreshes the cached process list.
+func (c *SystemMetricsCollector) sampleProcesses(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, processTimeout)
+	defer cancel()
+
+	processes, err := collectTopProcesses(ctx, topProcessCount)
+	if err != nil {
+		if ctx.Err() == nil {
+			c.Logger().Warn("process sampling failed", "error", err)
+		}
+		return
 	}
 
-	// Collect CPU metrics
-	wg.Add(1)
+	c.procMu.Lock()
+	c.processes = processes
+	c.procMu.Unlock()
+}
+
+// Collect gathers a full system metrics sample.
+func (c *SystemMetricsCollector) Collect(ctx context.Context) (any, error) {
+	metrics := models.SystemMetrics{CollectedAt: time.Now()}
+
+	var (
+		wg                              sync.WaitGroup
+		cpuErr, memErr, diskErr, netErr error
+	)
+
+	// Each goroutine writes a distinct field, so the struct needs no lock.
+	wg.Add(4)
 	go func() {
 		defer wg.Done()
-		metrics.CPU, cpuErr = c.collectCPUMetrics(ctx)
+		metrics.CPU, cpuErr = collectCPUMetrics(ctx)
 	}()
-
-	// Collect memory metrics
-	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		metrics.Memory, memErr = c.collectMemoryMetrics(ctx)
+		metrics.Memory, memErr = collectMemoryMetrics(ctx)
 	}()
-
-	// Collect disk metrics
-	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		metrics.Disk, diskErr = c.collectDiskMetrics(ctx)
+		metrics.Disk, diskErr = collectDiskMetrics(ctx)
 	}()
-
-	// Collect network metrics
-	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		metrics.Network, networkErr = c.collectNetworkMetrics(ctx)
+		metrics.Network, netErr = collectNetworkMetrics(ctx)
 	}()
-
-	// Wait for all collectors to finish
 	wg.Wait()
 
-	// Check for errors
-	if cpuErr != nil {
-		return nil, fmt.Errorf("failed to collect CPU metrics: %w", cpuErr)
-	}
-	if memErr != nil {
-		return nil, fmt.Errorf("failed to collect memory metrics: %w", memErr)
-	}
-	if diskErr != nil {
-		return nil, fmt.Errorf("failed to collect disk metrics: %w", diskErr)
-	}
-	if networkErr != nil {
-		return nil, fmt.Errorf("failed to collect network metrics: %w", networkErr)
+	// Served from the sampler's cache: enumerating processes is far slower than
+	// a refresh cycle and must not gate the rest of the sample.
+	metrics.Processes = c.cachedProcesses()
+
+	for _, e := range []struct {
+		what string
+		err  error
+	}{
+		{"cpu", cpuErr},
+		{"memory", memErr},
+		{"disk", diskErr},
+		{"network", netErr},
+	} {
+		if e.err != nil {
+			return nil, fmt.Errorf("collecting %s metrics: %w", e.what, e.err)
+		}
 	}
 
-	// Update the metrics
-	c.mutex.Lock()
+	c.mu.Lock()
 	c.metrics = metrics
-	c.mutex.Unlock()
+	c.mu.Unlock()
 
-	// Notify subscribers with proper cleanup of dead channels
-	c.notifySubscribers(metrics)
-
-	// Store the metrics in the database
-	c.StoreData("", metrics, "system")
+	c.UpdateData(metrics)
+	c.subscribers.publish(metrics)
+	c.store(metrics)
 
 	return metrics, nil
 }
 
-// notifySubscribers sends metrics to all active subscribers
-func (c *SystemMetricsCollector) notifySubscribers(metrics models.SystemMetrics) {
-	c.subMutex.RLock()
-	subscribers := make([]*Subscriber, 0, len(c.subscribers))
-	for _, sub := range c.subscribers {
-		subscribers = append(subscribers, sub)
+// store persists the sample when a store is configured. Failures are logged
+// rather than discarded: a database that has become unwritable would otherwise
+// look identical to one that is recording correctly.
+func (c *SystemMetricsCollector) store(metrics models.SystemMetrics) {
+	store := c.Storage()
+	if store == nil {
+		return
 	}
-	c.subMutex.RUnlock()
-
-	// Send to subscribers in parallel to avoid blocking
-	var wg sync.WaitGroup
-	for _, sub := range subscribers {
-		wg.Add(1)
-		go func(s *Subscriber) {
-			defer wg.Done()
-			select {
-			case s.ch <- metrics:
-				// Successfully sent
-			case <-s.ctx.Done():
-				// Subscriber context cancelled, will be cleaned up
-			case <-time.After(100 * time.Millisecond):
-				// Channel is blocked, skip this subscriber
-			}
-		}(sub)
-	}
-	wg.Wait()
-
-	// Clean up cancelled subscribers
-	c.cleanupDeadSubscribers()
-}
-
-// cleanupDeadSubscribers removes subscribers with cancelled contexts
-func (c *SystemMetricsCollector) cleanupDeadSubscribers() {
-	c.subMutex.Lock()
-	defer c.subMutex.Unlock()
-
-	for id, sub := range c.subscribers {
-		select {
-		case <-sub.ctx.Done():
-			close(sub.ch)
-			delete(c.subscribers, id)
-		default:
-			// Subscriber is still active
-		}
+	if err := store.StoreSystemMetrics(metrics); err != nil {
+		c.Logger().Error("failed to store system metrics", "error", err)
 	}
 }
 
-// GetLatestMetrics returns the latest metrics
+// GetLatestMetrics returns the most recent sample.
 func (c *SystemMetricsCollector) GetLatestMetrics() models.SystemMetrics {
-	c.mutex.RLock()
-	defer c.mutex.RUnlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.metrics
 }
 
-// Subscribe returns a channel that will receive metrics updates
-func (c *SystemMetricsCollector) Subscribe(ctx context.Context) (chan models.SystemMetrics, string) {
-	subCtx, cancel := context.WithCancel(ctx)
-	ch := make(chan models.SystemMetrics, 10)
-
-	// Generate unique ID for this subscriber
-	id := fmt.Sprintf("sub_%d_%d", time.Now().UnixNano(), len(c.subscribers))
-
-	subscriber := &Subscriber{
-		ch:     ch,
-		ctx:    subCtx,
-		cancel: cancel,
-	}
-
-	c.subMutex.Lock()
-	c.subscribers[id] = subscriber
-	c.subMutex.Unlock()
-
-	return ch, id
+// Subscribe returns a channel receiving every new sample, plus an id to pass to
+// Unsubscribe. The channel is owned and closed by the collector.
+func (c *SystemMetricsCollector) Subscribe() (<-chan models.SystemMetrics, string) {
+	return c.subscribers.subscribe(subscriberBuffer)
 }
 
-// Unsubscribe removes a subscription channel
+// Unsubscribe releases a subscription.
 func (c *SystemMetricsCollector) Unsubscribe(id string) {
-	c.subMutex.Lock()
-	defer c.subMutex.Unlock()
-
-	if sub, exists := c.subscribers[id]; exists {
-		sub.cancel()
-		close(sub.ch)
-		delete(c.subscribers, id)
-	}
+	c.subscribers.unsubscribe(id)
 }
 
-// Start starts the collector
+// Start begins periodic collection, plus the independent process sampler.
 func (c *SystemMetricsCollector) Start(ctx context.Context, interval time.Duration) error {
-	if err := c.BaseCollector.Start(ctx, interval); err != nil {
-		return err
-	}
-
-	// Initial collection
-	if _, err := c.Collect(ctx); err != nil {
-		return err
-	}
-
-	// Start periodic collection
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ticker.C:
-				if collectorCtx := c.Context(); collectorCtx != nil {
-					_, _ = c.Collect(collectorCtx) // Ignore errors during background collection
-				}
-			case <-c.Context().Done():
-				// Clean up all subscribers when collector stops
-				c.cleanupAllSubscribers()
-				return
-			}
+	if err := c.start(ctx, interval, func(ctx context.Context) {
+		if _, err := c.Collect(ctx); err != nil && ctx.Err() == nil {
+			c.Logger().Warn("system metrics collection failed", "error", err)
 		}
-	}()
+	}); err != nil {
+		return err
+	}
 
+	c.startProcessSampler(ctx)
 	return nil
 }
 
-// cleanupAllSubscribers closes all subscriber channels
-func (c *SystemMetricsCollector) cleanupAllSubscribers() {
-	c.subMutex.Lock()
-	defer c.subMutex.Unlock()
+// Stop halts collection, waits for the process sampler, and releases all
+// subscribers.
+func (c *SystemMetricsCollector) Stop() error {
+	err := c.BaseCollector.Stop()
 
-	for id, sub := range c.subscribers {
-		sub.cancel()
-		close(sub.ch)
-		delete(c.subscribers, id)
+	if c.procCancel != nil {
+		c.procCancel()
+		<-c.procDone
 	}
+
+	c.subscribers.closeAll()
+	return err
 }
 
-// collectCPUMetrics collects CPU metrics
-func (c *SystemMetricsCollector) collectCPUMetrics(ctx context.Context) (models.CPUMetrics, error) {
+func collectCPUMetrics(ctx context.Context) (models.CPUMetrics, error) {
 	metrics := models.CPUMetrics{}
 
-	// Get CPU usage percentage
-	percentages, err := cpu.PercentWithContext(ctx, 0, false)
+	// Overall utilisation is the only reading treated as required.
+	overall, err := cpu.PercentWithContext(ctx, 0, false)
 	if err != nil {
 		return metrics, err
 	}
-	if len(percentages) > 0 {
-		metrics.UsagePercent = percentages[0]
+	if len(overall) > 0 {
+		metrics.UsagePercent = overall[0]
 	}
 
-	// Get per-core usage
-	perCorePercentages, err := cpu.PercentWithContext(ctx, 0, true)
-	if err != nil {
-		return metrics, err
+	// Per-core utilisation is best-effort. gopsutil v3 reported "not implemented
+	// yet" for it on some platforms, and treating that as fatal failed the whole
+	// system sample, so CPU, memory and disk were never recorded there at all.
+	if perCore, err := cpu.PercentWithContext(ctx, 0, true); err == nil {
+		metrics.CoreUsage = perCore
 	}
-	metrics.CoreUsage = perCorePercentages
 
-	// Get load average if not on Windows
+	// Load average is unavailable on Windows.
 	if runtime.GOOS != "windows" {
-		loadAvg, err := load.AvgWithContext(ctx)
-		if err == nil {
+		if avg, err := load.AvgWithContext(ctx); err == nil {
 			metrics.LoadAverage = models.LoadAverageMetrics{
-				Load1:  loadAvg.Load1,
-				Load5:  loadAvg.Load5,
-				Load15: loadAvg.Load15,
+				Load1:  avg.Load1,
+				Load5:  avg.Load5,
+				Load15: avg.Load15,
 			}
 		}
 	}
@@ -277,49 +263,42 @@ func (c *SystemMetricsCollector) collectCPUMetrics(ctx context.Context) (models.
 	return metrics, nil
 }
 
-// collectMemoryMetrics collects memory metrics
-func (c *SystemMetricsCollector) collectMemoryMetrics(ctx context.Context) (models.MemoryMetrics, error) {
+func collectMemoryMetrics(ctx context.Context) (models.MemoryMetrics, error) {
 	metrics := models.MemoryMetrics{}
 
-	// Get virtual memory stats
-	vmstat, err := mem.VirtualMemoryWithContext(ctx)
+	vm, err := mem.VirtualMemoryWithContext(ctx)
 	if err != nil {
 		return metrics, err
 	}
-	metrics.Total = vmstat.Total
-	metrics.Used = vmstat.Used
-	metrics.Free = vmstat.Free
-	metrics.UsagePercent = vmstat.UsedPercent
+	metrics.Total = vm.Total
+	metrics.Used = vm.Used
+	metrics.Free = vm.Free
+	metrics.UsagePercent = vm.UsedPercent
 
-	// Get swap memory stats
-	swap, err := mem.SwapMemoryWithContext(ctx)
-	if err != nil {
-		return metrics, err
+	// Swap is reported as zero on systems without it rather than as an error.
+	if swap, err := mem.SwapMemoryWithContext(ctx); err == nil {
+		metrics.SwapTotal = swap.Total
+		metrics.SwapUsed = swap.Used
+		metrics.SwapFree = swap.Free
 	}
-	metrics.SwapTotal = swap.Total
-	metrics.SwapUsed = swap.Used
-	metrics.SwapFree = swap.Free
 
 	return metrics, nil
 }
 
-// collectDiskMetrics collects disk metrics
-func (c *SystemMetricsCollector) collectDiskMetrics(ctx context.Context) (models.DiskMetrics, error) {
-	metrics := models.DiskMetrics{
-		Filesystems: []models.FilesystemMetrics{},
-	}
+func collectDiskMetrics(ctx context.Context) (models.DiskMetrics, error) {
+	metrics := models.DiskMetrics{Filesystems: []models.FilesystemMetrics{}}
 
-	// Get partitions
 	partitions, err := disk.PartitionsWithContext(ctx, false)
 	if err != nil {
 		return metrics, err
 	}
 
-	// Get usage for each partition
 	for _, partition := range partitions {
+		// Unreadable mount points (permission denied, disconnected network
+		// shares) are skipped: one bad mount must not fail the whole sample.
 		usage, err := disk.UsageWithContext(ctx, partition.Mountpoint)
 		if err != nil {
-			continue // Skip on error
+			continue
 		}
 
 		metrics.Filesystems = append(metrics.Filesystems, models.FilesystemMetrics{
@@ -334,38 +313,115 @@ func (c *SystemMetricsCollector) collectDiskMetrics(ctx context.Context) (models
 	return metrics, nil
 }
 
-// collectNetworkMetrics collects network metrics
-func (c *SystemMetricsCollector) collectNetworkMetrics(ctx context.Context) (models.NetworkMetrics, error) {
-	metrics := models.NetworkMetrics{
-		Interfaces: []models.InterfaceMetrics{},
-	}
+func collectNetworkMetrics(ctx context.Context) (models.NetworkMetrics, error) {
+	metrics := models.NetworkMetrics{Interfaces: []models.InterfaceMetrics{}}
 
-	// Get network interfaces
-	interfaces, err := net.InterfacesWithContext(ctx)
-	if err != nil {
-		return metrics, err
-	}
-
-	// Get IO counters for each interface
 	counters, err := net.IOCountersWithContext(ctx, true)
 	if err != nil {
 		return metrics, err
 	}
 
+	interfaces, err := net.InterfacesWithContext(ctx)
+	if err != nil {
+		return metrics, err
+	}
+
+	known := make(map[string]struct{}, len(interfaces))
+	for _, iface := range interfaces {
+		known[iface.Name] = struct{}{}
+	}
+
 	for _, counter := range counters {
-		for _, iface := range interfaces {
-			if iface.Name == counter.Name {
-				metrics.Interfaces = append(metrics.Interfaces, models.InterfaceMetrics{
-					Name:        counter.Name,
-					BytesSent:   counter.BytesSent,
-					BytesRecv:   counter.BytesRecv,
-					PacketsSent: counter.PacketsSent,
-					PacketsRecv: counter.PacketsRecv,
-				})
-				break
-			}
+		if _, ok := known[counter.Name]; !ok {
+			continue
 		}
+		metrics.Interfaces = append(metrics.Interfaces, models.InterfaceMetrics{
+			Name:        counter.Name,
+			BytesSent:   counter.BytesSent,
+			BytesRecv:   counter.BytesRecv,
+			PacketsSent: counter.PacketsSent,
+			PacketsRecv: counter.PacketsRecv,
+		})
 	}
 
 	return metrics, nil
+}
+
+// collectTopProcesses returns the limit highest-CPU processes.
+//
+// The sweep is two-phase: every process is ranked using only its CPU share, then
+// the expensive details (name, command line, memory) are read for the handful
+// that will actually be displayed. Reading all of them for every process meant
+// several syscalls per process across hundreds of processes.
+//
+// Processes that exit while being inspected are skipped, which is normal on a
+// busy system.
+func collectTopProcesses(ctx context.Context, limit int) ([]models.ProcessMetrics, error) {
+	procs, err := process.ProcessesWithContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	type ranked struct {
+		proc *process.Process
+		cpu  float64
+	}
+
+	candidates := make([]ranked, 0, len(procs))
+	for _, p := range procs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		cpuPercent, err := p.CPUPercentWithContext(ctx)
+		if err != nil {
+			continue
+		}
+		candidates = append(candidates, ranked{proc: p, cpu: cpuPercent})
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].cpu > candidates[j].cpu
+	})
+
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+
+	collected := make([]models.ProcessMetrics, 0, len(candidates))
+	for _, candidate := range candidates {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		entry := models.ProcessMetrics{
+			PID:        candidate.proc.Pid,
+			CPUPercent: candidate.cpu,
+		}
+
+		// Details are best-effort: reading them for another user's process is
+		// often denied, and that must not drop the row.
+		if name, err := candidate.proc.NameWithContext(ctx); err == nil {
+			entry.Name = name
+			entry.Command = name
+		}
+		if cmdline, err := candidate.proc.CmdlineWithContext(ctx); err == nil && cmdline != "" {
+			entry.Command = cmdline
+		}
+		if memPercent, err := candidate.proc.MemoryPercentWithContext(ctx); err == nil {
+			entry.MemoryPercent = float64(memPercent)
+		}
+		if memInfo, err := candidate.proc.MemoryInfoWithContext(ctx); err == nil && memInfo != nil {
+			entry.MemoryBytes = memInfo.RSS
+		}
+
+		if entry.Name == "" {
+			entry.Name = fmt.Sprintf("pid-%d", entry.PID)
+			entry.Command = entry.Name
+		}
+
+		collected = append(collected, entry)
+	}
+
+	return collected, nil
 }

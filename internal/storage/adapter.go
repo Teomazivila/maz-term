@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,76 +24,59 @@ func NewAdapter(db *Database) *Adapter {
 	}
 }
 
-// StoreSystemMetrics stores system metrics in the database
-func (a *Adapter) StoreSystemMetrics(metrics interface{}) error {
-	// Type assertion to get the concrete type
-	sysMetrics, ok := metrics.(models.SystemMetrics)
-	if !ok {
-		return fmt.Errorf("invalid metrics type: expected SystemMetrics")
-	}
-
-	// Store the metrics in the database
-	return a.db.StoreSystemMetrics(sysMetrics)
+// StoreSystemMetrics stores system metrics in the database.
+func (a *Adapter) StoreSystemMetrics(metrics models.SystemMetrics) error {
+	return a.db.StoreSystemMetrics(metrics)
 }
 
-// StoreHTTPMetrics stores HTTP metrics in the database
-func (a *Adapter) StoreHTTPMetrics(name string, metrics interface{}) error {
-	// Type assertion to get the concrete type
-	httpMetrics, ok := metrics.(models.EndpointMetrics)
-	if !ok {
-		return fmt.Errorf("invalid metrics type: expected EndpointMetrics")
-	}
-
-	// Store the metrics in the database
-	return a.db.StoreHTTPMetrics(name, httpMetrics)
+// StoreHTTPMetrics stores HTTP metrics for a single endpoint.
+func (a *Adapter) StoreHTTPMetrics(name string, metrics models.EndpointMetrics) error {
+	return a.db.StoreHTTPMetrics(name, metrics)
 }
 
-// StoreGitMetrics stores Git metrics in the database
-func (a *Adapter) StoreGitMetrics(metrics interface{}) error {
-	// Type assertion to get the concrete type
-	gitMetrics, ok := metrics.(models.GitRepoMetrics)
-	if !ok {
-		return fmt.Errorf("invalid metrics type: expected GitRepoMetrics")
-	}
-
-	// Store the metrics in the database
-	return a.db.StoreGitMetrics(gitMetrics)
+// StoreGitMetrics stores Git repository metrics.
+func (a *Adapter) StoreGitMetrics(metrics models.GitRepoMetrics) error {
+	return a.db.StoreGitMetrics(metrics)
 }
 
-// StoreCloudMetrics stores cloud provider metrics in the database
-func (a *Adapter) StoreCloudMetrics(metrics interface{}) error {
-	// Type assertion to get the concrete type
-	cloudMetrics, ok := metrics.(models.CloudProviderMetrics)
-	if !ok {
-		return fmt.Errorf("invalid metrics type: expected CloudProviderMetrics")
-	}
-
-	// Store the metrics in the database
-	return a.db.StoreCloudMetrics(cloudMetrics)
+// StoreCloudSummary stores one cloud provider aggregate.
+func (a *Adapter) StoreCloudSummary(summary models.CloudSummary) error {
+	return a.db.StoreCloudSummary(summary)
 }
 
-// StoreKubernetesMetrics stores Kubernetes metrics in the database
-func (a *Adapter) StoreKubernetesMetrics(metrics interface{}) error {
-	// Type assertion to get the concrete type
-	k8sMetrics, ok := metrics.(models.KubernetesMetrics)
-	if !ok {
-		return fmt.Errorf("invalid metrics type: expected KubernetesMetrics")
-	}
-
-	// Store the metrics in the database
-	return a.db.StoreKubernetesMetrics(k8sMetrics)
+// StoreKubernetesSummary stores one cluster aggregate.
+func (a *Adapter) StoreKubernetesSummary(summary models.KubernetesSummary) error {
+	return a.db.StoreKubernetesSummary(summary)
 }
 
-// StoreCICDMetrics stores CI/CD metrics in the database
-func (a *Adapter) StoreCICDMetrics(metrics interface{}) error {
-	// Type assertion to get the concrete type
-	cicdMetrics, ok := metrics.(models.CICDMetrics)
-	if !ok {
-		return fmt.Errorf("invalid metrics type: expected CICDMetrics")
-	}
+// StoreCICDSummary stores one CI/CD provider aggregate.
+func (a *Adapter) StoreCICDSummary(summary models.CICDSummary) error {
+	return a.db.StoreCICDSummary(summary)
+}
 
-	// Store the metrics in the database
-	return a.db.StoreCICDMetrics(cicdMetrics)
+// GetCloudInstanceCountHistory returns the running-instance count over time.
+func (a *Adapter) GetCloudInstanceCountHistory(period time.Duration, points int) ([]models.TimeSeriesPoint, error) {
+	return a.db.GetCloudInstanceCountHistory(period, points)
+}
+
+// GetCloudCPUHistory returns mean instance CPU utilisation over time.
+func (a *Adapter) GetCloudCPUHistory(period time.Duration, points int) ([]models.TimeSeriesPoint, error) {
+	return a.db.GetCloudCPUHistory(period, points)
+}
+
+// GetKubernetesPodCountHistory returns the running-pod count over time.
+func (a *Adapter) GetKubernetesPodCountHistory(period time.Duration, points int) ([]models.TimeSeriesPoint, error) {
+	return a.db.GetKubernetesPodCountHistory(period, points)
+}
+
+// GetKubernetesNodeReadyHistory returns the ready-node count over time.
+func (a *Adapter) GetKubernetesNodeReadyHistory(period time.Duration, points int) ([]models.TimeSeriesPoint, error) {
+	return a.db.GetKubernetesNodeReadyHistory(period, points)
+}
+
+// GetCICDSuccessRateHistory returns the workflow success rate over time.
+func (a *Adapter) GetCICDSuccessRateHistory(period time.Duration, points int) ([]models.TimeSeriesPoint, error) {
+	return a.db.GetCICDSuccessRateHistory(period, points)
 }
 
 // GetCPUUsageHistory fetches historical CPU usage data
@@ -160,131 +144,164 @@ func (a *Adapter) DeleteEventAnnotation(id string) error {
 	return a.db.DeleteEventAnnotation(id)
 }
 
-// ExportData exports metrics data to CSV files based on the provided options
-func (a *Adapter) ExportData(options interface{}) error {
-	// Create default export options
-	exportOpts := ExportOptions{
-		OutputDir:     filepath.Join(os.Getenv("HOME"), "Downloads", "maz-term_export"),
-		Period:        7 * 24 * time.Hour, // Last 7 days
+// ExportAll writes every metric family covering the given period and returns the
+// paths written. An empty outputDir or non-positive period uses the defaults.
+//
+// It exists so callers can request an export without depending on the
+// ExportOptions type, keeping the UI's storage interface free of storage types.
+func (a *Adapter) ExportAll(outputDir string, period time.Duration) ([]string, error) {
+	opts, err := DefaultExportOptions()
+	if err != nil {
+		return nil, err
+	}
+	if outputDir != "" {
+		opts.OutputDir = outputDir
+	}
+	if period > 0 {
+		opts.Period = period
+	}
+
+	return a.ExportData(opts)
+}
+
+// DefaultExportOptions returns the export defaults: the last seven days of every
+// metric family, written under the user's home directory.
+//
+// os.UserHomeDir is used rather than os.Getenv("HOME"), which is empty on
+// Windows and would silently export to a path relative to the process's working
+// directory.
+func DefaultExportOptions() (ExportOptions, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ExportOptions{}, fmt.Errorf("resolving home directory: %w", err)
+	}
+
+	return ExportOptions{
+		OutputDir:     filepath.Join(home, "maz-term-exports"),
+		Period:        7 * 24 * time.Hour,
 		IncludeSystem: true,
 		IncludeHTTP:   true,
 		IncludeGit:    true,
+	}, nil
+}
+
+// ExportData writes the selected metrics to CSV files and returns the paths
+// written. An empty OutputDir or non-positive Period falls back to the defaults.
+func (a *Adapter) ExportData(opts ExportOptions) ([]string, error) {
+	defaults, err := DefaultExportOptions()
+	if err != nil {
+		return nil, err
 	}
 
-	// If options is a map, try to extract values
-	if opts, ok := options.(map[string]interface{}); ok {
-		// Output directory
-		if outputDir, ok := opts["OutputDir"].(string); ok && outputDir != "" {
-			exportOpts.OutputDir = outputDir
-		}
-
-		// Period
-		if period, ok := opts["Period"].(time.Duration); ok && period > 0 {
-			exportOpts.Period = period
-		}
-
-		// Which metrics to include
-		if includeSystem, ok := opts["IncludeSystem"].(bool); ok {
-			exportOpts.IncludeSystem = includeSystem
-		}
-
-		if includeHTTP, ok := opts["IncludeHTTP"].(bool); ok {
-			exportOpts.IncludeHTTP = includeHTTP
-		}
-
-		if includeGit, ok := opts["IncludeGit"].(bool); ok {
-			exportOpts.IncludeGit = includeGit
-		}
+	exportOpts := opts
+	if exportOpts.OutputDir == "" {
+		exportOpts.OutputDir = defaults.OutputDir
+	}
+	if exportOpts.Period <= 0 {
+		exportOpts.Period = defaults.Period
 	}
 
 	// Create output directory if it doesn't exist
-	if err := os.MkdirAll(exportOpts.OutputDir, 0755); err != nil {
-		return fmt.Errorf("failed to create output directory: %w", err)
+	if err := os.MkdirAll(exportOpts.OutputDir, 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create output directory: %w", err)
 	}
+
+	var written []string
 
 	// Create a timestamp for filenames
 	timestamp := time.Now().Format("20060102_150405")
 
-	// Export system metrics if enabled
+	// export writes one series and records the path. A read failure is fatal:
+	// silently producing no file made a broken query look like an empty range.
+	export := func(name string, points []models.TimeSeriesPoint, valueHeader string) error {
+		if len(points) == 0 {
+			return nil
+		}
+		filename := filepath.Join(exportOpts.OutputDir, fmt.Sprintf("%s_%s.csv", name, timestamp))
+		if err := exportTimeSeriesData(filename, points, "Timestamp", valueHeader); err != nil {
+			return err
+		}
+		written = append(written, filename)
+		return nil
+	}
+
 	if exportOpts.IncludeSystem {
-		// Export CPU usage data
-		cpuData, err := a.db.GetCPUUsageHistory(exportOpts.Period, 1000)
-		if err == nil && len(cpuData) > 0 {
-			filename := filepath.Join(exportOpts.OutputDir, fmt.Sprintf("cpu_usage_%s.csv", timestamp))
-			if err := exportTimeSeriesData(filename, cpuData, "Timestamp", "CPU Usage (%)"); err != nil {
-				return err
-			}
+		cpuData, err := a.db.GetCPUUsageHistory(exportOpts.Period, exportRowLimit)
+		if err != nil {
+			return nil, fmt.Errorf("reading CPU history: %w", err)
+		}
+		if err := export("cpu_usage", cpuData, "CPU Usage (%)"); err != nil {
+			return nil, err
 		}
 
-		// Export memory usage data
-		memData, err := a.db.GetMemoryUsageHistory(exportOpts.Period, 1000)
-		if err == nil && len(memData) > 0 {
-			filename := filepath.Join(exportOpts.OutputDir, fmt.Sprintf("memory_usage_%s.csv", timestamp))
-			if err := exportTimeSeriesData(filename, memData, "Timestamp", "Memory Usage (%)"); err != nil {
-				return err
-			}
+		memData, err := a.db.GetMemoryUsageHistory(exportOpts.Period, exportRowLimit)
+		if err != nil {
+			return nil, fmt.Errorf("reading memory history: %w", err)
+		}
+		if err := export("memory_usage", memData, "Memory Usage (%)"); err != nil {
+			return nil, err
 		}
 	}
 
-	// Export HTTP metrics if enabled
 	if exportOpts.IncludeHTTP {
-		// Get all endpoints
 		endpoints, err := a.db.GetAllEndpoints()
-		if err == nil {
-			for _, endpoint := range endpoints {
-				// Export response time data
-				respTimeData, err := a.db.GetHTTPResponseTimeHistory(endpoint, exportOpts.Period, 1000)
-				if err == nil && len(respTimeData) > 0 {
-					safeEndpoint := sanitizeFileName(endpoint)
-					filename := filepath.Join(exportOpts.OutputDir, fmt.Sprintf("http_%s_response_time_%s.csv", safeEndpoint, timestamp))
-					if err := exportTimeSeriesData(filename, respTimeData, "Timestamp", "Response Time (ms)"); err != nil {
-						return err
-					}
-				}
+		if err != nil {
+			return nil, fmt.Errorf("listing endpoints: %w", err)
+		}
 
-				// Export availability data
-				availData, err := a.db.GetHTTPAvailabilityHistory(endpoint, exportOpts.Period, 1000)
-				if err == nil && len(availData) > 0 {
-					safeEndpoint := sanitizeFileName(endpoint)
-					filename := filepath.Join(exportOpts.OutputDir, fmt.Sprintf("http_%s_availability_%s.csv", safeEndpoint, timestamp))
-					if err := exportTimeSeriesData(filename, availData, "Timestamp", "Availability (%)"); err != nil {
-						return err
-					}
-				}
+		for _, endpoint := range endpoints {
+			safe := sanitizeFileName(endpoint)
+
+			respTime, err := a.db.GetHTTPResponseTimeHistory(endpoint, exportOpts.Period, exportRowLimit)
+			if err != nil {
+				return nil, fmt.Errorf("reading response-time history for %s: %w", endpoint, err)
+			}
+			if err := export("http_"+safe+"_response_time", respTime, "Response Time (ms)"); err != nil {
+				return nil, err
+			}
+
+			availability, err := a.db.GetHTTPAvailabilityHistory(endpoint, exportOpts.Period, exportRowLimit)
+			if err != nil {
+				return nil, fmt.Errorf("reading availability history for %s: %w", endpoint, err)
+			}
+			if err := export("http_"+safe+"_availability", availability, "Availability (%)"); err != nil {
+				return nil, err
 			}
 		}
 	}
 
-	// Export Git metrics if enabled
 	if exportOpts.IncludeGit {
-		// Get repository name (could be enhanced to support multiple repos)
-		repoName := "current_repo" // Default name
-
-		// Export commit count data
-		commitData, err := a.db.GetCommitCountHistory(repoName, exportOpts.Period, 1000)
-		if err == nil && len(commitData) > 0 {
-			safeRepo := sanitizeFileName(repoName)
-			filename := filepath.Join(exportOpts.OutputDir, fmt.Sprintf("git_%s_commits_%s.csv", safeRepo, timestamp))
-			if err := exportTimeSeriesData(filename, commitData, "Timestamp", "Commit Count"); err != nil {
-				return err
-			}
+		repos, err := a.db.GetAllGitRepositories()
+		if err != nil {
+			return nil, fmt.Errorf("listing git repositories: %w", err)
 		}
 
-		// Export modified files data
-		modifiedData, err := a.db.GetModifiedFilesHistory(repoName, exportOpts.Period, 1000)
-		if err == nil && len(modifiedData) > 0 {
-			safeRepo := sanitizeFileName(repoName)
-			filename := filepath.Join(exportOpts.OutputDir, fmt.Sprintf("git_%s_modified_files_%s.csv", safeRepo, timestamp))
-			if err := exportTimeSeriesData(filename, modifiedData, "Timestamp", "Modified Files"); err != nil {
-				return err
+		for _, repo := range repos {
+			safe := sanitizeFileName(repo)
+
+			commits, err := a.db.GetCommitCountHistory(repo, exportOpts.Period, exportRowLimit)
+			if err != nil {
+				return nil, fmt.Errorf("reading commit history for %s: %w", repo, err)
+			}
+			if err := export("git_"+safe+"_commits", commits, "Commit Count"); err != nil {
+				return nil, err
+			}
+
+			modified, err := a.db.GetModifiedFilesHistory(repo, exportOpts.Period, exportRowLimit)
+			if err != nil {
+				return nil, fmt.Errorf("reading modified-file history for %s: %w", repo, err)
+			}
+			if err := export("git_"+safe+"_modified_files", modified, "Modified Files"); err != nil {
+				return nil, err
 			}
 		}
 	}
 
-	return nil
+	return written, nil
 }
 
-// Helper functions for export
+// exportRowLimit caps how many points each exported series contains.
+const exportRowLimit = 10000
 
 // ExportOptions contains options for exporting data
 type ExportOptions struct {
@@ -295,51 +312,78 @@ type ExportOptions struct {
 	IncludeGit    bool          // Whether to include Git metrics
 }
 
-// exportTimeSeriesData exports time series data to a CSV file
-func exportTimeSeriesData(filename string, data []models.TimeSeriesPoint, timeHeader, valueHeader string) error {
-	// Implementation from export.go, copied here to avoid circular imports
+// exportTimeSeriesData writes one time series to a CSV file.
+//
+// Both the writer flush and the file close are checked. Deferring them
+// unchecked, as an earlier revision did, discards short-write and
+// disk-full errors and produces a silently truncated export.
+func exportTimeSeriesData(filename string, data []models.TimeSeriesPoint, timeHeader, valueHeader string) (err error) {
 	file, err := os.Create(filename)
 	if err != nil {
-		return fmt.Errorf("failed to create file: %w", err)
+		return fmt.Errorf("creating %s: %w", filename, err)
 	}
-	defer file.Close()
-
-	// Create CSV writer
-	writer := csv.NewWriter(file)
-	defer writer.Flush()
-
-	// Write header
-	if err := writer.Write([]string{timeHeader, valueHeader}); err != nil {
-		return fmt.Errorf("failed to write header: %w", err)
-	}
-
-	// Write data
-	for _, point := range data {
-		// Format timestamp as ISO format
-		timestamp := point.Timestamp.Format(time.RFC3339)
-
-		// Format value
-		value := fmt.Sprintf("%.2f", point.Value)
-
-		if err := writer.Write([]string{timestamp, value}); err != nil {
-			return fmt.Errorf("failed to write data: %w", err)
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("closing %s: %w", filename, closeErr)
 		}
+	}()
+
+	writer := csv.NewWriter(file)
+
+	if err := writer.Write([]string{timeHeader, valueHeader}); err != nil {
+		return fmt.Errorf("writing header to %s: %w", filename, err)
+	}
+
+	for _, point := range data {
+		record := []string{
+			point.Timestamp.Format(time.RFC3339),
+			strconv.FormatFloat(point.Value, 'f', 2, 64),
+		}
+		if err := writer.Write(record); err != nil {
+			return fmt.Errorf("writing row to %s: %w", filename, err)
+		}
+	}
+
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		return fmt.Errorf("flushing %s: %w", filename, err)
 	}
 
 	return nil
 }
 
-// sanitizeFileName removes invalid characters from a filename
+// sanitizeFileName reduces an arbitrary endpoint or repository name to a safe
+// single path element.
+//
+// The previous implementation called filepath.Clean and filepath.Base once per
+// character of its blocklist, which meant separators were stripped by Base
+// rather than replaced and the loop did the same work nine times.
 func sanitizeFileName(name string) string {
-	// Implementation from export.go
-	invalidChars := `<>:"/\|?*`
-	result := name
-	for _, char := range invalidChars {
-		result = filepath.Clean(result)
-		result = filepath.Base(result)
-		result = strings.ReplaceAll(result, string(char), "_")
+	cleaned := strings.Map(func(r rune) rune {
+		switch {
+		case r < 0x20, r == 0x7f:
+			return '_'
+		case strings.ContainsRune(`<>:"/\|?*`, r):
+			return '_'
+		default:
+			return r
+		}
+	}, name)
+
+	// Checked before filepath.Base, which maps an empty path to ".".
+	cleaned = strings.TrimSpace(cleaned)
+	if cleaned == "" {
+		return "unnamed"
 	}
-	return result
+
+	// Collapse to a single element so no input can traverse directories, and
+	// reject the relative-path names outright.
+	cleaned = filepath.Base(cleaned)
+	if cleaned == "." || cleaned == ".." || cleaned == string(filepath.Separator) {
+		return "_"
+	}
+
+	return cleaned
 }
 
 // AddNotification adds a new notification
@@ -372,54 +416,28 @@ func (a *Adapter) GetUnreadNotificationCount() (int, error) {
 	return a.db.GetUnreadNotificationCount()
 }
 
-// GetFilteredNotifications retrieves notifications with filtering options
+// GetFilteredNotifications retrieves notifications matching the given sources
+// and severities.
+//
+// Filtering happens entirely in SQL. Re-filtering here over a bounded row window
+// silently dropped matches that fell outside it.
 func (a *Adapter) GetFilteredNotifications(count int, includeRead bool, sources []string, severities []string) ([]models.Notification, error) {
-	// Get all notifications first
-	notifications, err := a.db.GetNotifications(count*2, includeRead) // Get more to account for filtering
-	if err != nil {
-		return nil, err
-	}
+	return a.db.GetFilteredNotifications(count, includeRead, sources, severities)
+}
 
-	// Apply filters
-	var filtered []models.Notification
-	for _, notification := range notifications {
-		// Filter by sources if specified
-		if len(sources) > 0 {
-			sourceMatch := false
-			for _, source := range sources {
-				if strings.EqualFold(string(notification.Source), source) {
-					sourceMatch = true
-					break
-				}
-			}
-			if !sourceMatch {
-				continue
-			}
-		}
+// GetNotificationSources returns the distinct notification sources on record.
+func (a *Adapter) GetNotificationSources() ([]string, error) {
+	return a.db.GetNotificationSources()
+}
 
-		// Filter by severities if specified
-		if len(severities) > 0 {
-			severityMatch := false
-			for _, severity := range severities {
-				if strings.EqualFold(string(notification.Severity), severity) {
-					severityMatch = true
-					break
-				}
-			}
-			if !severityMatch {
-				continue
-			}
-		}
+// GetNotificationSeverities returns the distinct notification severities on record.
+func (a *Adapter) GetNotificationSeverities() ([]string, error) {
+	return a.db.GetNotificationSeverities()
+}
 
-		filtered = append(filtered, notification)
-
-		// Stop when we have enough results
-		if len(filtered) >= count {
-			break
-		}
-	}
-
-	return filtered, nil
+// GetAllGitRepositories returns the repository names with recorded metrics.
+func (a *Adapter) GetAllGitRepositories() ([]string, error) {
+	return a.db.GetAllGitRepositories()
 }
 
 // Close closes the storage adapter and underlying database connection

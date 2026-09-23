@@ -69,7 +69,7 @@ cd myplugin
 Initialize a Go module:
 
 ```bash
-go mod init github.com/yourusername/myplugin
+go mod init example.com/your-name/myplugin   # your own module path
 ```
 
 ### Step 2: Implement the Plugin Interface

@@ -26,6 +26,31 @@ func (d *Database) StoreGitMetrics(metrics models.GitRepoMetrics) error {
 	return nil
 }
 
+// GetAllGitRepositories returns the distinct repository names with recorded
+// metrics. Exports and history views iterate this rather than assuming a single
+// hardcoded repository name.
+func (d *Database) GetAllGitRepositories() ([]string, error) {
+	rows, err := d.db.Query("SELECT DISTINCT repo_name FROM git_metrics ORDER BY repo_name")
+	if err != nil {
+		return nil, fmt.Errorf("failed to list git repositories: %w", err)
+	}
+	defer rows.Close()
+
+	var repos []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("failed to scan git repository name: %w", err)
+		}
+		repos = append(repos, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate git repositories: %w", err)
+	}
+
+	return repos, nil
+}
+
 // GetCommitCountHistory fetches historical commit count data
 func (d *Database) GetCommitCountHistory(repoName string, period time.Duration, points int) ([]models.TimeSeriesPoint, error) {
 	// Calculate the time range

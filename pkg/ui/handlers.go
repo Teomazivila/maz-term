@@ -1,539 +1,627 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
-	"log"
+	"log/slog"
+	"net/url"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"time"
 
+	"github.com/Teomazivila/maz-term/pkg/models"
 	ui "github.com/gizak/termui/v3"
 )
 
-// formatTime formats a time.Time into a readable string
-func formatTime(t time.Time) string {
-	return t.Format("2006-01-02 15:04:05")
-}
-
-// handleEvent processes UI events and dispatches them appropriately
+// handleEvent dispatches one terminal event.
+//
+// Modal states are handled first and each returns, so a key consumed by a modal
+// cannot also fall through to the global bindings.
 func (a *App) handleEvent(e ui.Event) {
-	// If export is in progress, only allow cancel (Ctrl+C)
-	if a.ExportInProgress {
-		if e.ID == "<C-c>" {
-			a.ExportInProgress = false
-			a.StatusBar.Text = "Export cancelled"
-			a.updateLayout()
-		}
-		return
-	}
-
-	// If adding annotation, handle text input
-	if a.AddingAnnotation {
+	if a.addingAnnotation {
 		a.handleAnnotationInput(e)
 		return
 	}
-
-	// In zoom mode, handle zoom-specific controls
-	if a.ZoomMode {
-		a.handleZoomModeEvent(e)
-		return
-	}
-
-	// In notification filter mode, handle filter-specific controls
 	if a.NotificationFilterMode {
 		a.handleNotificationFilterEvent(e)
 		return
 	}
-
-	// In notification detail mode, handle detail-specific controls
 	if a.NotificationDetailMode {
-		a.handleNotificationDetailEvent(e)
-		return
+		if a.handleNotificationDetailEvent(e) {
+			return
+		}
+	}
+	if a.ZoomMode {
+		if a.handleZoomModeEvent(e) {
+			return
+		}
 	}
 
-	// If currently in plugins tab, handle plugin-specific events
-	if len(a.Tabs) > a.ActiveTabIndex && a.Tabs[a.ActiveTabIndex].Name == "Plugins" {
-		a.handlePluginEvents(e)
+	// Tab-specific handling. A consumed key returns rather than continuing into
+	// the global switch, which previously let one keypress trigger two actions.
+	switch a.activeTabName() {
+	case "Plugins":
+		if a.handlePluginEvents(e) {
+			return
+		}
+	case "Notifications":
+		if a.handleNotificationEvents(e) {
+			return
+		}
+	case "History":
+		if a.handleHistoryEvents(e) {
+			return
+		}
 	}
 
-	// Handle common events
+	a.handleGlobalEvent(e)
+}
+
+// handleGlobalEvent handles bindings available on every tab.
+func (a *App) handleGlobalEvent(e ui.Event) {
 	switch e.ID {
 	case "q", "<C-c>":
-		a.Running = false
+		a.quit = true
+
 	case "?":
 		a.ShowHelp = !a.ShowHelp
-		if a.ShowHelp {
-			a.StatusBar.Text = "Showing help. Press ? to hide."
-		} else {
-			a.StatusBar.Text = "Help hidden. Press ? for help."
-		}
+
 	case "<Resize>":
-		payload := e.Payload.(ui.Resize)
-		a.TermWidth = payload.Width
-		a.TermHeight = payload.Height
-		a.StatusBar.Text = fmt.Sprintf("Terminal resized to %d x %d", a.TermWidth, a.TermHeight)
-	case "<Tab>", "l", "n", "<Right>":
-		a.changeTab(1)
-	case "<BackTab>", "h", "p", "<Left>":
-		a.changeTab(-1)
-	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
-		idx, _ := strconv.Atoi(e.ID)
-		if idx <= len(a.Tabs) {
-			a.ActiveTabIndex = idx - 1
-			a.StatusBar.Text = fmt.Sprintf("Switched to tab: %s", a.Tabs[a.ActiveTabIndex].Name)
+		// A checked assertion: termui delivers the payload as an any, and an
+		// unchecked assertion panics if it is ever another type.
+		if payload, ok := e.Payload.(ui.Resize); ok {
+			a.TermWidth, a.TermHeight = payload.Width, payload.Height
 		}
+
+	case "<Tab>", "<Right>", "l", "n":
+		a.changeTab(1)
+
+	case "<BackTab>", "<Left>", "h", "p":
+		a.changeTab(-1)
+
+	case "<Up>", "k":
+		// A cluster listing hundreds of rows is unusable without this.
+		if table := a.primaryTable(); table != nil {
+			table.MoveSelection(-1)
+		}
+
+	case "<Down>", "j":
+		if table := a.primaryTable(); table != nil {
+			table.MoveSelection(1)
+		}
+
+	case "<Home>", "g":
+		if table := a.primaryTable(); table != nil {
+			table.SelectedRow = 0
+		}
+
+	case "<End>", "G":
+		if table := a.primaryTable(); table != nil {
+			table.SelectedRow = len(table.Rows) - 1
+		}
+
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+		index, err := strconv.Atoi(e.ID)
+		if err != nil {
+			return
+		}
+		a.selectTab(index - 1)
+
+	case "r":
+		a.updateData()
+		a.setStatus("refreshed")
+
+	case "e":
+		a.exportData()
+	}
+}
+
+// handleHistoryEvents handles bindings specific to the History tab. It reports
+// whether the event was consumed.
+func (a *App) handleHistoryEvents(e ui.Event) bool {
+	switch e.ID {
+	case "[":
+		a.setHistoryRange(a.clampedRangeIndex() - 1)
+		return true
+
+	case "]":
+		a.setHistoryRange(a.clampedRangeIndex() + 1)
+		return true
+
+	case "a":
+		a.ShowAnnotations = !a.ShowAnnotations
+		a.setStatus("annotations %s", onOff(a.ShowAnnotations))
+		return true
+
+	case "A":
+		a.beginAnnotation()
+		return true
+
 	case "z":
 		a.enterZoomMode()
-	case "a":
-		if a.Tabs[a.ActiveTabIndex].Name == "History" {
-			a.ShowAnnotations = !a.ShowAnnotations
-			if a.ShowAnnotations {
-				a.StatusBar.Text = "Showing annotations"
-			} else {
-				a.StatusBar.Text = "Hiding annotations"
-			}
-		}
-	case "e":
-		// Export data for current tab
-		a.exportData()
-	case "r":
-		a.StatusBar.Text = "Refreshing data..."
-		a.updateData()
-	case "c":
-		a.ComparisonMode = !a.ComparisonMode
-		if a.ComparisonMode {
-			a.StatusBar.Text = "Comparison mode enabled. Select metrics to compare."
-		} else {
-			a.StatusBar.Text = "Comparison mode disabled."
-			a.ComparisonMetrics = nil
-		}
-	case "A":
-		// Add new annotation (changed from "n" to avoid duplicate)
-		if a.Tabs[a.ActiveTabIndex].Name == "History" {
-			a.addNewAnnotation()
-		}
-	case "[":
-		// Decrease time range
-		if a.HistoryRangeIdx > 0 {
-			a.HistoryRangeIdx--
-			a.updateHistoryRange()
-		}
-	case "]":
-		// Increase time range
-		if a.HistoryRangeIdx < len(historyRangeOptions)-1 {
-			a.HistoryRangeIdx++
-			a.updateHistoryRange()
-		}
-	case "f":
-		// Toggle notification filter mode
-		if a.Tabs[a.ActiveTabIndex].Name == "Notifications" {
-			a.NotificationFilterMode = !a.NotificationFilterMode
-			if a.NotificationFilterMode {
-				a.StatusBar.Text = "Filter mode: Use arrow keys to select filters, space to toggle, enter to apply"
-			} else {
-				a.StatusBar.Text = "Filter mode disabled"
-			}
-		}
-	case "d":
-		// Show notification details
-		if a.Tabs[a.ActiveTabIndex].Name == "Notifications" && len(a.Notifications) > 0 {
-			a.NotificationDetailMode = !a.NotificationDetailMode
-			if a.NotificationDetailMode {
-				a.StatusBar.Text = "Showing notification details. Press 'd' to go back."
-			} else {
-				a.StatusBar.Text = "Notification details hidden."
-			}
-		}
-	case "m":
-		// Mark notification as read
-		if a.Tabs[a.ActiveTabIndex].Name == "Notifications" && len(a.Notifications) > 0 {
-			notification := a.Notifications[a.SelectedNotification]
-			if !notification.Read {
-				if a.Storage != nil {
-					if err := a.Storage.MarkAsRead(notification.ID); err != nil {
-						a.StatusBar.Text = fmt.Sprintf("Error marking notification as read: %s", err.Error())
-					} else {
-						a.StatusBar.Text = "Notification marked as read"
-						// Refresh notifications
-						a.loadNotifications()
-					}
-				}
-			}
-		}
-	case "D":
-		// Dismiss notification
-		if a.Tabs[a.ActiveTabIndex].Name == "Notifications" && len(a.Notifications) > 0 {
-			notification := a.Notifications[a.SelectedNotification]
-			if a.Storage != nil {
-				if err := a.Storage.DismissNotification(notification.ID); err != nil {
-					a.StatusBar.Text = fmt.Sprintf("Error dismissing notification: %s", err.Error())
-				} else {
-					a.StatusBar.Text = "Notification dismissed"
-					// Refresh notifications
-					a.loadNotifications()
-				}
-			}
-		}
-	case "C":
-		// Clear all notifications
-		if a.Tabs[a.ActiveTabIndex].Name == "Notifications" {
-			if a.Storage != nil {
-				if err := a.Storage.ClearAllNotifications(); err != nil {
-					a.StatusBar.Text = fmt.Sprintf("Error clearing notifications: %s", err.Error())
-				} else {
-					a.StatusBar.Text = "All notifications cleared"
-					// Refresh notifications
-					a.loadNotifications()
-				}
-			}
-		}
-	case "o":
-		// Open URL from notification if it has an action URL
-		if a.Tabs[a.ActiveTabIndex].Name == "Notifications" && len(a.Notifications) > 0 {
-			notification := a.Notifications[a.SelectedNotification]
-			if notification.ActionURL != "" {
-				a.openURL(notification.ActionURL)
-			}
-		}
-	case "<Up>":
-		if a.Tabs[a.ActiveTabIndex].Name == "Notifications" && len(a.Notifications) > 0 {
-			if a.SelectedNotification > 0 {
-				a.SelectedNotification--
-				a.StatusBar.Text = fmt.Sprintf("Selected notification %d of %d", a.SelectedNotification+1, len(a.Notifications))
-			}
-		}
-	case "<Down>":
-		if a.Tabs[a.ActiveTabIndex].Name == "Notifications" && len(a.Notifications) > 0 {
-			if a.SelectedNotification < len(a.Notifications)-1 {
-				a.SelectedNotification++
-				a.StatusBar.Text = fmt.Sprintf("Selected notification %d of %d", a.SelectedNotification+1, len(a.Notifications))
-			}
-		}
+		return true
 	}
+	return false
 }
 
-// handleZoomModeEvent handles events while in zoom mode
-func (a *App) handleZoomModeEvent(e ui.Event) {
-	switch e.ID {
-	case "z", "q", "<Escape>":
-		a.ZoomMode = false
-		a.StatusBar.Text = "Zoom mode disabled"
-	case "<Left>", "h":
-		// Move zoom region left
-		if a.ZoomStartPercent > 0.05 {
-			a.ZoomStartPercent -= 0.05
-			a.ZoomEndPercent -= 0.05
-			a.updateZoomIndicator()
-		}
-	case "<Right>", "l":
-		// Move zoom region right
-		if a.ZoomEndPercent < 0.95 {
-			a.ZoomStartPercent += 0.05
-			a.ZoomEndPercent += 0.05
-			a.updateZoomIndicator()
-		}
-	case "<Up>", "k":
-		// Decrease zoom region size (zoom in)
-		if a.ZoomEndPercent-a.ZoomStartPercent > 0.1 {
-			a.ZoomStartPercent += 0.05
-			a.ZoomEndPercent -= 0.05
-			a.updateZoomIndicator()
-		}
-	case "<Down>", "j":
-		// Increase zoom region size (zoom out)
-		if a.ZoomStartPercent > 0.05 {
-			a.ZoomStartPercent -= 0.05
-		}
-		if a.ZoomEndPercent < 0.95 {
-			a.ZoomEndPercent += 0.05
-		}
-		a.updateZoomIndicator()
-	case "<Enter>":
-		// Apply zoom
-		a.applyZoom()
-		a.ZoomMode = false
-		a.StatusBar.Text = fmt.Sprintf("Applied zoom from %s to %s",
-			formatTime(a.ZoomStartTime),
-			formatTime(a.ZoomEndTime))
+// selectTab activates the tab at index when it exists.
+func (a *App) selectTab(index int) {
+	if index < 0 || index >= len(a.Tabs) {
+		return
 	}
+	a.ActiveTabIndex = index
+	a.onTabChanged()
 }
 
-// handleAnnotationInput handles text input for adding annotations
-func (a *App) handleAnnotationInput(e ui.Event) {
-	// Static variables to hold the form values
-	staticValues := struct {
-		title        string
-		description  string
-		currentField int
-		focusChanged bool
-	}{}
-
-	switch e.ID {
-	case "<Escape>":
-		a.AddingAnnotation = false
-		a.StatusBar.Text = "Annotation cancelled"
-	case "<Enter>":
-		if staticValues.currentField < 2 {
-			// Move to next field
-			staticValues.currentField++
-			staticValues.focusChanged = true
-			// Update the form display
-			if staticValues.currentField == 1 {
-				a.StatusBar.Text = "Enter annotation description:"
-			} else {
-				// Submit the annotation
-				a.submitAnnotation(staticValues.title, staticValues.description)
-				a.AddingAnnotation = false
-			}
-		}
-	case "<Backspace>":
-		if staticValues.currentField == 0 && len(staticValues.title) > 0 {
-			staticValues.title = staticValues.title[:len(staticValues.title)-1]
-		} else if staticValues.currentField == 1 && len(staticValues.description) > 0 {
-			staticValues.description = staticValues.description[:len(staticValues.description)-1]
-		}
-	default:
-		// Check if this is a single character (for text input)
-		if len(e.ID) == 1 {
-			if staticValues.currentField == 0 {
-				staticValues.title += e.ID
-			} else if staticValues.currentField == 1 {
-				staticValues.description += e.ID
-			}
-		}
-	}
-
-	// Update the annotation form
-	if a.AddingAnnotation {
-		formText := "Add Annotation\n\n"
-
-		// Title field
-		formText += "Title: "
-		if staticValues.currentField == 0 {
-			formText += staticValues.title + "█" // Add cursor
-		} else {
-			formText += staticValues.title
-		}
-
-		formText += "\n\n"
-
-		// Description field
-		formText += "Description: "
-		if staticValues.currentField == 1 {
-			formText += staticValues.description + "█" // Add cursor
-		} else {
-			formText += staticValues.description
-		}
-
-		formText += "\n\n"
-		formText += "Press ENTER to continue, ESC to cancel"
-
-		a.AnnotationForm.Text = formText
-		ui.Render(a.AnnotationForm)
-
-		if staticValues.focusChanged {
-			staticValues.focusChanged = false
-		}
-	}
-}
-
-// handleNotificationFilterEvent handles events while in notification filter mode
-func (a *App) handleNotificationFilterEvent(e ui.Event) {
-	// Initialize filter mode data if needed
-	if a.NotificationSources == nil {
-		a.loadNotificationFilters()
-	}
-
-	// Static variables to manage filter state
-	staticValues := struct {
-		currentSection        int // 0 = sources, 1 = severities
-		selectedIndex         int
-		selectedSourcesMap    map[string]bool
-		selectedSeveritiesMap map[string]bool
-	}{}
-
-	if staticValues.selectedSourcesMap == nil {
-		staticValues.selectedSourcesMap = make(map[string]bool)
-	}
-	if staticValues.selectedSeveritiesMap == nil {
-		staticValues.selectedSeveritiesMap = make(map[string]bool)
-	}
-
-	switch e.ID {
-	case "<Escape>":
-		a.NotificationFilterMode = false
-		a.StatusBar.Text = "Filter mode cancelled"
-	case "<Enter>":
-		// Apply the filters
-		var selectedSources, selectedSeverities []string
-
-		for source, selected := range staticValues.selectedSourcesMap {
-			if selected {
-				selectedSources = append(selectedSources, source)
-			}
-		}
-
-		for severity, selected := range staticValues.selectedSeveritiesMap {
-			if selected {
-				selectedSeverities = append(selectedSeverities, severity)
-			}
-		}
-
-		// Apply filters and refresh notifications
-		a.StatusBar.Text = "Applying filters..."
-		a.loadFilteredNotifications(selectedSources, selectedSeverities)
-		a.NotificationFilterMode = false
-	case "<Tab>":
-		// Switch between sources and severities sections
-		staticValues.currentSection = (staticValues.currentSection + 1) % 2
-		staticValues.selectedIndex = 0
-	case "<Up>":
-		// Move selection up
-		if staticValues.currentSection == 0 && staticValues.selectedIndex > 0 {
-			staticValues.selectedIndex--
-		} else if staticValues.currentSection == 1 && staticValues.selectedIndex > 0 {
-			staticValues.selectedIndex--
-		}
-	case "<Down>":
-		// Move selection down
-		if staticValues.currentSection == 0 && staticValues.selectedIndex < len(a.NotificationSources)-1 {
-			staticValues.selectedIndex++
-		} else if staticValues.currentSection == 1 && staticValues.selectedIndex < len(a.NotificationSeverities)-1 {
-			staticValues.selectedIndex++
-		}
-	case "<Space>":
-		// Toggle selection
-		if staticValues.currentSection == 0 && len(a.NotificationSources) > 0 {
-			source := a.NotificationSources[staticValues.selectedIndex]
-			staticValues.selectedSourcesMap[source] = !staticValues.selectedSourcesMap[source]
-		} else if staticValues.currentSection == 1 && len(a.NotificationSeverities) > 0 {
-			severity := a.NotificationSeverities[staticValues.selectedIndex]
-			staticValues.selectedSeveritiesMap[severity] = !staticValues.selectedSeveritiesMap[severity]
-		}
-	}
-
-	// Update the filter UI
-	if a.NotificationFilterMode {
-		// Your UI update logic goes here...
-	}
-}
-
-// handleNotificationDetailEvent handles events in notification detail mode
-func (a *App) handleNotificationDetailEvent(e ui.Event) {
-	switch e.ID {
-	case "d", "<Escape>":
-		a.NotificationDetailMode = false
-		a.StatusBar.Text = "Detail mode closed"
-	case "o":
-		// Open URL if available
-		if len(a.Notifications) > a.SelectedNotification {
-			notification := a.Notifications[a.SelectedNotification]
-			if notification.ActionURL != "" {
-				a.openURL(notification.ActionURL)
-			}
-		}
-	}
-}
-
-// openURL opens a URL in the default browser
-func (a *App) openURL(url string) {
-	a.StatusBar.Text = fmt.Sprintf("Opening URL: %s", url)
-
-	var cmd *exec.Cmd
-
-	// Determine the command based on OS
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", url)
-	case "windows":
-		cmd = exec.Command("cmd", "/c", "start", url)
-	default: // Linux and others
-		cmd = exec.Command("xdg-open", url)
-	}
-
-	// Run the command
-	err := cmd.Start()
-	if err != nil {
-		a.StatusBar.Text = fmt.Sprintf("Error opening URL: %s", err.Error())
-		log.Printf("Error opening URL: %v", err)
-	}
-
-	// Don't wait for the command to finish - let the browser take over
-}
-
-// changeTab changes the current tab by the specified delta
+// changeTab moves the selection by delta, wrapping at both ends.
 func (a *App) changeTab(delta int) {
-	newIndex := a.ActiveTabIndex + delta
-
-	// Wrap around the tab list
-	if newIndex < 0 {
-		newIndex = len(a.Tabs) - 1
-	} else if newIndex >= len(a.Tabs) {
-		newIndex = 0
-	}
-
-	a.ActiveTabIndex = newIndex
-	a.StatusBar.Text = fmt.Sprintf("Switched to tab: %s", a.Tabs[a.ActiveTabIndex].Name)
-
-	// If switching to the Notifications tab, mark as read
-	if a.Tabs[a.ActiveTabIndex].Name == "Notifications" {
-		a.Tabs[a.ActiveTabIndex].HasUnread = false
-	}
-}
-
-// enterZoomMode enters the zoom mode for interactive chart zooming
-func (a *App) enterZoomMode() {
-	// Only enable zoom mode in History tab
-	if a.Tabs[a.ActiveTabIndex].Name == "History" {
-		a.ZoomMode = true
-		a.ZoomActiveChart = 0     // Start with first chart
-		a.ZoomStartPercent = 0.25 // Default to middle 50%
-		a.ZoomEndPercent = 0.75
-		a.StatusBar.Text = "Zoom mode: Use arrow keys to adjust region, Enter to apply, Esc to cancel"
-	}
-}
-
-// updateZoomIndicator updates the zoom region indicator on the charts
-func (a *App) updateZoomIndicator() {
-	if !a.ZoomMode {
+	if len(a.Tabs) == 0 {
 		return
 	}
 
-	// Calculate zoom time boundaries based on current time range
+	index := (a.ActiveTabIndex + delta) % len(a.Tabs)
+	if index < 0 {
+		index += len(a.Tabs)
+	}
+	a.ActiveTabIndex = index
+	a.onTabChanged()
+}
+
+// onTabChanged runs the side effects of switching tabs.
+func (a *App) onTabChanged() {
+	tab := a.activeTab()
+	if tab == nil {
+		return
+	}
+
+	a.setStatus("%s", tab.Name)
+
+	// The operator has just asked to see this tab, so its throttled data is
+	// loaded now rather than up to a cadence later.
+	a.historyRefresh.force()
+	a.pluginRefresh.force()
+
+	if tab.Name == "Notifications" {
+		tab.HasUnread = false
+		a.notificationsRefresh.force()
+		a.loadNotifications()
+	}
+}
+
+// primaryTable returns the active tab's main table, when it has one.
+func (a *App) primaryTable() *DataTable {
+	tab := a.activeTab()
+	if tab == nil || len(tab.Tables) == 0 {
+		return nil
+	}
+	return tab.Tables[0]
+}
+
+// beginAnnotation opens the annotation form with an empty draft.
+func (a *App) beginAnnotation() {
+	a.addingAnnotation = true
+	a.annotation = annotationDraft{}
+
+	if a.AnnotationForm == nil {
+		a.AnnotationForm = newPanel("Add annotation")
+		a.AnnotationForm.BorderStyle.Fg = ui.ColorYellow
+	}
+
+	a.renderAnnotationForm()
+	a.setStatus("annotation: enter a title")
+}
+
+// handleAnnotationInput accumulates text for the annotation form.
+//
+// The draft lives on App. Holding it in a function-local struct meant every
+// keystroke reset it, so the title never exceeded one character and the form
+// could not be submitted.
+func (a *App) handleAnnotationInput(e ui.Event) {
+	switch e.ID {
+	case "<Escape>", "<C-c>":
+		a.addingAnnotation = false
+		a.annotation = annotationDraft{}
+		a.setStatus("annotation cancelled")
+		return
+
+	case "<Enter>":
+		if a.annotation.Field == 0 {
+			if a.annotation.Title == "" {
+				a.setStatus("annotation: a title is required")
+				return
+			}
+			a.annotation.Field = 1
+			a.setStatus("annotation: enter a description, then Enter to save")
+		} else {
+			a.submitAnnotation(a.annotation.Title, a.annotation.Description)
+			a.addingAnnotation = false
+			a.annotation = annotationDraft{}
+			return
+		}
+
+	case "<Backspace>", "<C-8>":
+		a.editDraft(func(s string) string {
+			if s == "" {
+				return s
+			}
+			runes := []rune(s)
+			return string(runes[:len(runes)-1])
+		})
+
+	case "<Space>":
+		a.editDraft(func(s string) string { return s + " " })
+
+	default:
+		// termui reports printable keys as single-character event IDs.
+		if len([]rune(e.ID)) == 1 {
+			a.editDraft(func(s string) string { return s + e.ID })
+		}
+	}
+
+	a.renderAnnotationForm()
+}
+
+// editDraft applies edit to whichever annotation field has focus.
+func (a *App) editDraft(edit func(string) string) {
+	if a.annotation.Field == 0 {
+		a.annotation.Title = edit(a.annotation.Title)
+		return
+	}
+	a.annotation.Description = edit(a.annotation.Description)
+}
+
+// renderAnnotationForm refreshes the form's text from the current draft.
+func (a *App) renderAnnotationForm() {
+	if a.AnnotationForm == nil {
+		return
+	}
+
+	cursor := func(field int) string {
+		if a.annotation.Field == field {
+			return "_"
+		}
+		return ""
+	}
+
+	a.AnnotationForm.Text = fmt.Sprintf(
+		"Title\n  %s%s\n\nDescription\n  %s%s\n\nEnter to continue, Esc to cancel",
+		a.annotation.Title, cursor(0),
+		a.annotation.Description, cursor(1),
+	)
+}
+
+// submitAnnotation stores the drafted annotation.
+func (a *App) submitAnnotation(title, description string) {
+	if a.Storage == nil {
+		a.setStatus("cannot save annotation: storage is disabled")
+		return
+	}
+
+	annotation := models.EventAnnotation{
+		ID:          fmt.Sprintf("ann-%d", time.Now().UnixNano()),
+		Title:       title,
+		Description: description,
+		Timestamp:   time.Now(),
+		// EventTypeOther is a defined constant; the previous value "manual" was
+		// not one of the EventType values at all.
+		Type:     models.EventTypeOther,
+		Severity: models.SeverityInfo,
+		Source:   "operator",
+		Tags:     []string{"user-created"},
+	}
+
+	if err := a.Storage.AddEventAnnotation(annotation); err != nil {
+		a.setStatus("failed to save annotation: %v", err)
+		slog.Default().Error("failed to save annotation", "error", err)
+		return
+	}
+
+	a.refreshAnnotations()
+	a.setStatus("annotation saved")
+}
+
+// enterZoomMode starts interactive zoom selection on the History tab.
+func (a *App) enterZoomMode() {
+	a.ZoomMode = true
+	a.ZoomStartPercent = 0.25
+	a.ZoomEndPercent = 0.75
+	a.updateZoomIndicator()
+}
+
+// handleZoomModeEvent handles zoom selection keys, reporting whether the event
+// was consumed.
+func (a *App) handleZoomModeEvent(e ui.Event) bool {
+	const step = 0.05
+
+	switch e.ID {
+	case "z", "<Escape>":
+		a.ZoomMode = false
+		a.setStatus("zoom cancelled")
+
+	case "<Left>":
+		if a.ZoomStartPercent-step >= 0 {
+			a.ZoomStartPercent -= step
+			a.ZoomEndPercent -= step
+			a.updateZoomIndicator()
+		}
+
+	case "<Right>":
+		if a.ZoomEndPercent+step <= 1 {
+			a.ZoomStartPercent += step
+			a.ZoomEndPercent += step
+			a.updateZoomIndicator()
+		}
+
+	case "<Up>":
+		if a.ZoomEndPercent-a.ZoomStartPercent > 2*step {
+			a.ZoomStartPercent += step
+			a.ZoomEndPercent -= step
+			a.updateZoomIndicator()
+		}
+
+	case "<Down>":
+		a.ZoomStartPercent = maxFloat(0, a.ZoomStartPercent-step)
+		a.ZoomEndPercent = minFloat(1, a.ZoomEndPercent+step)
+		a.updateZoomIndicator()
+
+	case "<Enter>":
+		a.applyZoom()
+
+	default:
+		return false
+	}
+
+	return true
+}
+
+// updateZoomIndicator recomputes the selected window from the percentages.
+func (a *App) updateZoomIndicator() {
 	end := time.Now()
 	start := end.Add(-a.HistoryRange)
+	span := end.Sub(start)
 
-	totalDuration := end.Sub(start)
-	zoomStartOffset := time.Duration(float64(totalDuration) * a.ZoomStartPercent)
-	zoomEndOffset := time.Duration(float64(totalDuration) * a.ZoomEndPercent)
+	a.ZoomStartTime = start.Add(time.Duration(float64(span) * a.ZoomStartPercent))
+	a.ZoomEndTime = start.Add(time.Duration(float64(span) * a.ZoomEndPercent))
 
-	a.ZoomStartTime = start.Add(zoomStartOffset)
-	a.ZoomEndTime = start.Add(zoomEndOffset)
-
-	// Update status bar with zoom range
-	a.StatusBar.Text = fmt.Sprintf("Zoom: %s to %s (Use arrow keys, Enter to apply, Esc to cancel)",
-		formatTime(a.ZoomStartTime),
-		formatTime(a.ZoomEndTime))
+	a.setStatus("zoom %s to %s - Enter to apply, Esc to cancel",
+		a.ZoomStartTime.Format("15:04"), a.ZoomEndTime.Format("15:04"))
 }
 
-// applyZoom applies the selected zoom region to the history charts
+// applyZoom narrows the history window to the selected span.
 func (a *App) applyZoom() {
-	if !a.ZoomMode {
+	span := a.ZoomEndTime.Sub(a.ZoomStartTime)
+	if span <= 0 {
+		a.setStatus("zoom window is empty")
 		return
 	}
 
-	// Calculate and set a new history range based on the zoom window
-	a.HistoryRange = a.ZoomEndTime.Sub(a.ZoomStartTime)
+	a.HistoryRange = span
+	// A negative index marks a custom range that matches no preset.
+	a.HistoryRangeIdx = -1
+	a.ZoomMode = false
 
-	// Set a custom history range that doesn't match the predefined options
-	a.HistoryRangeIdx = -1 // Custom range
-
-	// Force a data update to reflect the zoomed range
-	a.updateData()
+	a.setStatus("zoomed to %s", span.Round(time.Minute))
+	a.updateHistoryTabData()
 }
 
-// exportData exports the current tab's data
+// exportData writes the recorded metrics to CSV.
+//
+// This previously reported "Export functionality not yet implemented" while a
+// complete exporter sat unused in the storage adapter.
 func (a *App) exportData() {
-	a.StatusBar.Text = "Export functionality not yet implemented"
+	if a.Storage == nil {
+		a.setStatus("cannot export: storage is disabled")
+		return
+	}
+
+	a.setStatus("exporting...")
+
+	files, err := a.Storage.ExportAll("", a.HistoryRange)
+	if err != nil {
+		a.setStatus("export failed: %v", err)
+		slog.Default().Error("export failed", "error", err)
+		return
+	}
+
+	if len(files) == 0 {
+		a.setStatus("nothing to export yet")
+		return
+	}
+
+	a.setStatus("exported %d files to %s", len(files), filepath.Dir(files[0]))
+	slog.Default().Info("exported metrics", "files", len(files))
+}
+
+// openURL opens a validated http(s) URL in the operator's browser.
+//
+// Only http and https are allowed. Handing an arbitrary string to the platform
+// opener let a notification, which any plugin can create, point at a file:// URL
+// or smuggle shell metacharacters through cmd.exe.
+func (a *App) openURL(raw string) {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		a.setStatus("cannot open link: %v", err)
+		return
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		a.setStatus("refusing to open %s link", parsed.Scheme)
+		slog.Default().Warn("blocked non-http URL from notification", "scheme", parsed.Scheme)
+		return
+	}
+	if parsed.Host == "" {
+		a.setStatus("refusing to open link without a host")
+		return
+	}
+
+	safe := parsed.String()
+
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", safe)
+	case "windows":
+		// rundll32 receives the URL directly, so it is never re-parsed by
+		// cmd.exe the way "cmd /c start <url>" would be.
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", safe)
+	default:
+		cmd = exec.Command("xdg-open", safe)
+	}
+
+	if err := cmd.Start(); err != nil {
+		a.setStatus("failed to open link: %v", err)
+		slog.Default().Error("failed to open URL", "error", err)
+		return
+	}
+
+	// The browser is not waited on, but the process is reaped so it does not
+	// linger as a zombie for the dashboard's lifetime.
+	go func() {
+		if err := cmd.Wait(); err != nil {
+			slog.Default().Debug("browser process exited with an error", "error", err)
+		}
+	}()
+
+	a.setStatus("opened %s", safe)
+}
+
+// handleNotificationEvents handles bindings specific to the Notifications tab,
+// reporting whether the event was consumed.
+func (a *App) handleNotificationEvents(e ui.Event) bool {
+	switch e.ID {
+	case "f":
+		a.toggleNotificationFilter()
+
+	case "d":
+		a.NotificationDetailMode = !a.NotificationDetailMode
+		a.updateNotificationDetails()
+
+	case "<Up>":
+		a.moveNotificationSelection(-1)
+
+	case "<Down>":
+		a.moveNotificationSelection(1)
+
+	case "m":
+		a.withSelectedNotification(func(n models.Notification) {
+			if n.Read {
+				a.setStatus("already read")
+				return
+			}
+			a.applyNotificationAction("marked as read", a.Storage.MarkAsRead(n.ID))
+		})
+
+	case "D":
+		a.withSelectedNotification(func(n models.Notification) {
+			a.applyNotificationAction("dismissed", a.Storage.DismissNotification(n.ID))
+		})
+
+	case "C":
+		if a.Storage == nil {
+			a.setStatus("storage is disabled")
+			return true
+		}
+		a.applyNotificationAction("all notifications cleared", a.Storage.ClearAllNotifications())
+
+	case "o":
+		a.withSelectedNotification(func(n models.Notification) {
+			if n.ActionURL == "" {
+				a.setStatus("no link on this notification")
+				return
+			}
+			a.openURL(n.ActionURL)
+		})
+
+	default:
+		return false
+	}
+
+	return true
+}
+
+// handleNotificationDetailEvent handles the detail overlay, reporting whether the
+// event was consumed.
+func (a *App) handleNotificationDetailEvent(e ui.Event) bool {
+	switch e.ID {
+	case "<Escape>":
+		a.NotificationDetailMode = false
+		a.setStatus("detail view closed")
+		return true
+	}
+	return false
+}
+
+// withSelectedNotification runs fn against the highlighted notification.
+func (a *App) withSelectedNotification(fn func(models.Notification)) {
+	if a.Storage == nil {
+		a.setStatus("storage is disabled")
+		return
+	}
+	if len(a.Notifications) == 0 {
+		a.setStatus("no notifications")
+		return
+	}
+	if a.SelectedNotification < 0 || a.SelectedNotification >= len(a.Notifications) {
+		a.SelectedNotification = 0
+	}
+
+	fn(a.Notifications[a.SelectedNotification])
+}
+
+// applyNotificationAction reports the outcome of a notification mutation and
+// reloads the list on success.
+func (a *App) applyNotificationAction(success string, err error) {
+	switch {
+	case err == nil:
+		a.setStatus("%s", success)
+		a.loadNotifications()
+	case errors.Is(err, models.ErrNotFound):
+		a.setStatus("notification no longer exists")
+		a.loadNotifications()
+	default:
+		a.setStatus("action failed: %v", err)
+		slog.Default().Error("notification action failed", "error", err)
+	}
+}
+
+// moveNotificationSelection moves the highlight by delta, clamped to the list.
+func (a *App) moveNotificationSelection(delta int) {
+	if len(a.Notifications) == 0 {
+		return
+	}
+
+	next := a.SelectedNotification + delta
+	if next < 0 || next >= len(a.Notifications) {
+		return
+	}
+
+	a.SelectedNotification = next
+	a.setStatus("notification %d of %d", next+1, len(a.Notifications))
+
+	if a.NotificationDetailMode {
+		a.updateNotificationDetails()
+	}
+}
+
+// formatTime renders a timestamp for detail views.
+func formatTime(t time.Time) string {
+	if t.IsZero() {
+		return "-"
+	}
+	return t.Format("2006-01-02 15:04:05")
+}
+
+func maxFloat(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func minFloat(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
 }

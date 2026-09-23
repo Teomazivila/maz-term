@@ -7,7 +7,13 @@ import (
 	"github.com/Teomazivila/maz-term/pkg/models"
 )
 
-// StoreHTTPMetrics saves HTTP endpoint metrics to the database
+// StoreHTTPMetrics saves HTTP endpoint metrics to the database.
+//
+// The row is stamped with the time of the check when the caller recorded one, and
+// with the insert time otherwise. Using LastChecked unconditionally wrote a zero
+// time as a year-1 Unix timestamp, which every time-window query then excluded
+// while GetAllEndpoints still reported the endpoint: the history looked
+// permanently empty for an endpoint that was plainly being monitored.
 func (d *Database) StoreHTTPMetrics(name string, metrics models.EndpointMetrics) error {
 	// Convert boolean to integer for SQLite
 	isUp := 0
@@ -15,10 +21,15 @@ func (d *Database) StoreHTTPMetrics(name string, metrics models.EndpointMetrics)
 		isUp = 1
 	}
 
+	timestamp := metrics.LastChecked
+	if timestamp.IsZero() {
+		timestamp = time.Now()
+	}
+
 	// Insert the metrics
 	_, err := d.db.Exec(
 		"INSERT INTO http_metrics (timestamp, endpoint_name, endpoint_url, status_code, response_time, is_up) VALUES (?, ?, ?, ?, ?, ?)",
-		metrics.LastChecked.Unix(),
+		timestamp.Unix(),
 		name,
 		metrics.URL,
 		metrics.StatusCode,

@@ -4,35 +4,44 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
 	"github.com/Teomazivila/maz-term/pkg/models"
 )
 
-// HTTPSubscriber represents a subscription with context for cleanup
-type HTTPSubscriber struct {
-	ch     chan map[string]models.EndpointMetrics
-	ctx    context.Context
-	cancel context.CancelFunc
-}
+const (
+	// availabilityWindow is how many recent checks the availability percentage
+	// is computed over, per endpoint.
+	availabilityWindow = 100
 
-// HTTPHealthChecker checks the health of HTTP endpoints
+	// maxConcurrentChecks bounds in-flight requests so a large endpoint list
+	// cannot open an unbounded number of sockets at once.
+	maxConcurrentChecks = 8
+
+	// defaultCheckTimeout applies to endpoints that do not set their own.
+	defaultCheckTimeout = 10 * time.Second
+)
+
+// HTTPHealthChecker checks the health of HTTP endpoints.
 type HTTPHealthChecker struct {
 	*BaseCollector
-	endpoints   []models.EndpointConfig
-	metrics     map[string]models.EndpointMetrics
-	client      *http.Client
-	mutex       sync.RWMutex
-	subscribers map[string]*HTTPSubscriber
-	subMutex    sync.RWMutex
+
+	endpoints []models.EndpointConfig
+	client    *http.Client
+
+	mu      sync.RWMutex
+	metrics map[string]models.EndpointMetrics
+	history map[string][]bool
+
+	subscribers *broadcaster[map[string]models.EndpointMetrics]
 }
 
-// NewHTTPHealthChecker creates a new HTTP health checker
+// NewHTTPHealthChecker creates a health checker for the given endpoints.
 func NewHTTPHealthChecker(endpoints []models.EndpointConfig) *HTTPHealthChecker {
-	// Create a custom HTTP client with proper timeouts and connection pooling
 	client := &http.Client{
-		Timeout: 10 * time.Second,
+		Timeout: defaultCheckTimeout,
 		Transport: &http.Transport{
 			MaxIdleConns:          100,
 			MaxIdleConnsPerHost:   20,
@@ -46,247 +55,201 @@ func NewHTTPHealthChecker(endpoints []models.EndpointConfig) *HTTPHealthChecker 
 	return &HTTPHealthChecker{
 		BaseCollector: NewBaseCollector("http_health"),
 		endpoints:     endpoints,
-		metrics:       make(map[string]models.EndpointMetrics),
 		client:        client,
-		subscribers:   make(map[string]*HTTPSubscriber),
+		metrics:       make(map[string]models.EndpointMetrics, len(endpoints)),
+		history:       make(map[string][]bool, len(endpoints)),
+		subscribers:   newBroadcaster[map[string]models.EndpointMetrics](),
 	}
 }
 
-// Collect checks the health of all HTTP endpoints
-func (c *HTTPHealthChecker) Collect(ctx context.Context) (interface{}, error) {
-	metrics := make(map[string]models.EndpointMetrics)
-	var wg sync.WaitGroup
-	var mutex sync.Mutex // To protect concurrent writes to metrics map
+// Collect checks every configured endpoint concurrently, bounded by
+// maxConcurrentChecks.
+func (c *HTTPHealthChecker) Collect(ctx context.Context) (any, error) {
+	results := make(map[string]models.EndpointMetrics, len(c.endpoints))
 
-	// Create a context with timeout for all endpoint checks
-	checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
+	var (
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		sema = make(chan struct{}, maxConcurrentChecks)
+	)
 
-	// Start a goroutine for each endpoint
 	for _, endpoint := range c.endpoints {
 		wg.Add(1)
 		go func(ep models.EndpointConfig) {
 			defer wg.Done()
-			metric := c.checkEndpoint(checkCtx, ep)
 
-			mutex.Lock()
-			metrics[ep.Name] = metric
-			mutex.Unlock()
-
-			// Store metrics for this endpoint
-			c.StoreData(ep.Name, metric, "http")
-		}(endpoint)
-	}
-
-	// Wait for all checks to complete
-	wg.Wait()
-
-	// Update the metrics
-	c.mutex.Lock()
-	c.metrics = metrics
-	c.mutex.Unlock()
-
-	// Notify subscribers with proper cleanup
-	c.notifySubscribers(metrics)
-
-	return metrics, nil
-}
-
-// notifySubscribers sends metrics to all active subscribers
-func (c *HTTPHealthChecker) notifySubscribers(metrics map[string]models.EndpointMetrics) {
-	c.subMutex.RLock()
-	subscribers := make([]*HTTPSubscriber, 0, len(c.subscribers))
-	for _, sub := range c.subscribers {
-		subscribers = append(subscribers, sub)
-	}
-	c.subMutex.RUnlock()
-
-	// Send to subscribers in parallel to avoid blocking
-	var wg sync.WaitGroup
-	for _, sub := range subscribers {
-		wg.Add(1)
-		go func(s *HTTPSubscriber) {
-			defer wg.Done()
 			select {
-			case s.ch <- metrics:
-				// Successfully sent
-			case <-s.ctx.Done():
-				// Subscriber context cancelled, will be cleaned up
-			case <-time.After(100 * time.Millisecond):
-				// Channel is blocked, skip this subscriber
-			}
-		}(sub)
-	}
-	wg.Wait()
-
-	// Clean up cancelled subscribers
-	c.cleanupDeadSubscribers()
-}
-
-// cleanupDeadSubscribers removes subscribers with cancelled contexts
-func (c *HTTPHealthChecker) cleanupDeadSubscribers() {
-	c.subMutex.Lock()
-	defer c.subMutex.Unlock()
-
-	for id, sub := range c.subscribers {
-		select {
-		case <-sub.ctx.Done():
-			close(sub.ch)
-			delete(c.subscribers, id)
-		default:
-			// Subscriber is still active
-		}
-	}
-}
-
-// GetLatestMetrics returns the latest metrics
-func (c *HTTPHealthChecker) GetLatestMetrics() map[string]models.EndpointMetrics {
-	c.mutex.RLock()
-	defer c.mutex.RUnlock()
-	return c.metrics
-}
-
-// Subscribe returns a channel that will receive metrics updates
-func (c *HTTPHealthChecker) Subscribe(ctx context.Context) (chan map[string]models.EndpointMetrics, string) {
-	subCtx, cancel := context.WithCancel(ctx)
-	ch := make(chan map[string]models.EndpointMetrics, 10)
-
-	// Generate unique ID for this subscriber
-	id := fmt.Sprintf("http_sub_%d_%d", time.Now().UnixNano(), len(c.subscribers))
-
-	subscriber := &HTTPSubscriber{
-		ch:     ch,
-		ctx:    subCtx,
-		cancel: cancel,
-	}
-
-	c.subMutex.Lock()
-	c.subscribers[id] = subscriber
-	c.subMutex.Unlock()
-
-	return ch, id
-}
-
-// Unsubscribe removes a subscription channel
-func (c *HTTPHealthChecker) Unsubscribe(id string) {
-	c.subMutex.Lock()
-	defer c.subMutex.Unlock()
-
-	if sub, exists := c.subscribers[id]; exists {
-		sub.cancel()
-		close(sub.ch)
-		delete(c.subscribers, id)
-	}
-}
-
-// Start starts the collector
-func (c *HTTPHealthChecker) Start(ctx context.Context, interval time.Duration) error {
-	if err := c.BaseCollector.Start(ctx, interval); err != nil {
-		return err
-	}
-
-	// Initial collection
-	if _, err := c.Collect(ctx); err != nil {
-		return err
-	}
-
-	// Start periodic collection
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ticker.C:
-				if collectorCtx := c.Context(); collectorCtx != nil {
-					_, _ = c.Collect(collectorCtx) // Ignore errors during background collection
-				}
-			case <-c.Context().Done():
-				// Clean up all subscribers when collector stops
-				c.cleanupAllSubscribers()
+			case sema <- struct{}{}:
+				defer func() { <-sema }()
+			case <-ctx.Done():
 				return
 			}
-		}
-	}()
 
-	return nil
+			metric := c.checkEndpoint(ctx, ep)
+
+			mu.Lock()
+			results[ep.Name] = metric
+			mu.Unlock()
+		}(endpoint)
+	}
+	wg.Wait()
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	// Fold in the rolling availability before publishing, so every consumer
+	// sees the same figures.
+	c.mu.Lock()
+	for name, metric := range results {
+		window := append(c.history[name], metric.IsUp)
+		if len(window) > availabilityWindow {
+			window = window[len(window)-availabilityWindow:]
+		}
+		c.history[name] = window
+
+		up := 0
+		for _, ok := range window {
+			if ok {
+				up++
+			}
+		}
+		metric.ChecksInWindow = len(window)
+		if len(window) > 0 {
+			metric.Availability = float64(up) / float64(len(window)) * 100
+		}
+		results[name] = metric
+	}
+	c.metrics = results
+	c.mu.Unlock()
+
+	c.UpdateData(results)
+	c.subscribers.publish(results)
+	c.store(results)
+
+	return results, nil
 }
 
-// cleanupAllSubscribers closes all subscriber channels
-func (c *HTTPHealthChecker) cleanupAllSubscribers() {
-	c.subMutex.Lock()
-	defer c.subMutex.Unlock()
-
-	for id, sub := range c.subscribers {
-		sub.cancel()
-		close(sub.ch)
-		delete(c.subscribers, id)
+// store persists each endpoint sample, logging rather than discarding failures.
+func (c *HTTPHealthChecker) store(results map[string]models.EndpointMetrics) {
+	store := c.Storage()
+	if store == nil {
+		return
+	}
+	for name, metric := range results {
+		if err := store.StoreHTTPMetrics(name, metric); err != nil {
+			c.Logger().Error("failed to store HTTP metrics", "endpoint", name, "error", err)
+		}
 	}
 }
 
-// checkEndpoint checks the health of a single HTTP endpoint with proper error handling
+// checkEndpoint performs a single health check. It never returns an error: an
+// unreachable endpoint is a result, recorded in the metric's Error field.
 func (c *HTTPHealthChecker) checkEndpoint(ctx context.Context, endpoint models.EndpointConfig) models.EndpointMetrics {
 	metric := models.EndpointMetrics{
 		Name:        endpoint.Name,
 		URL:         endpoint.URL,
 		LastChecked: time.Now(),
-		IsUp:        false,
 	}
 
-	// Create a new request with context
-	req, err := http.NewRequestWithContext(ctx, endpoint.Method, endpoint.URL, nil)
+	// Only http(s) is checked. Anything else in the configuration is a mistake
+	// worth surfacing rather than handing to the transport.
+	parsed, err := url.Parse(endpoint.URL)
 	if err != nil {
+		metric.Error = fmt.Sprintf("invalid URL: %v", err)
+		return metric
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		metric.Error = fmt.Sprintf("unsupported URL scheme %q", parsed.Scheme)
 		return metric
 	}
 
-	// Add headers if provided
-	if endpoint.Headers != nil {
-		for key, value := range endpoint.Headers {
-			req.Header.Add(key, value)
-		}
+	method := endpoint.Method
+	if method == "" {
+		method = http.MethodGet
 	}
 
-	// Add User-Agent header
-	req.Header.Set("User-Agent", "maz-term/1.0")
+	checkCtx := ctx
+	if endpoint.Timeout > 0 {
+		var cancel context.CancelFunc
+		checkCtx, cancel = context.WithTimeout(ctx, endpoint.Timeout)
+		defer cancel()
+	}
 
-	// Measure response time
-	startTime := time.Now()
+	req, err := http.NewRequestWithContext(checkCtx, method, endpoint.URL, nil)
+	if err != nil {
+		metric.Error = fmt.Sprintf("building request: %v", err)
+		return metric
+	}
+
+	// Header names arrive lowercased from the configuration loader; Add
+	// canonicalises them, so the wire format is correct either way.
+	for key, value := range endpoint.Headers {
+		req.Header.Add(key, value)
+	}
+	req.Header.Set("User-Agent", "maz-term")
+
+	start := time.Now()
 	resp, err := c.client.Do(req)
-	responseTime := time.Since(startTime)
-	metric.ResponseTime = responseTime
-
-	// Check for errors
+	metric.ResponseTime = time.Since(start)
 	if err != nil {
+		metric.Error = err.Error()
 		return metric
 	}
-	defer func() {
-		if resp != nil && resp.Body != nil {
-			resp.Body.Close()
-		}
-	}()
+	defer resp.Body.Close()
 
-	// Record status code
 	metric.StatusCode = resp.StatusCode
-
-	// Check if the status code is considered healthy
 	if endpoint.ExpectedStatus != 0 {
 		metric.IsUp = resp.StatusCode == endpoint.ExpectedStatus
 	} else {
-		// Default: consider 2xx as healthy
 		metric.IsUp = resp.StatusCode >= 200 && resp.StatusCode < 300
 	}
-
-	// Status is determined by the IsUp field and StatusCode
 
 	return metric
 }
 
-// GetEndpoints returns the configured endpoints for the health checker
+// GetLatestMetrics returns the most recent results keyed by endpoint name.
+func (c *HTTPHealthChecker) GetLatestMetrics() map[string]models.EndpointMetrics {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	// A copy is returned because the caller renders it on another goroutine
+	// while the next collection cycle replaces the internal map.
+	out := make(map[string]models.EndpointMetrics, len(c.metrics))
+	for name, metric := range c.metrics {
+		out[name] = metric
+	}
+	return out
+}
+
+// GetEndpoints returns the configured endpoints.
 func (c *HTTPHealthChecker) GetEndpoints() []models.EndpointConfig {
 	return c.endpoints
 }
 
-// Name returns the collector name
-func (c *HTTPHealthChecker) Name() string {
-	return c.GetName()
+// Subscribe returns a channel receiving every new result set, plus an id for
+// Unsubscribe. The channel is owned and closed by the collector.
+func (c *HTTPHealthChecker) Subscribe() (<-chan map[string]models.EndpointMetrics, string) {
+	return c.subscribers.subscribe(subscriberBuffer)
+}
+
+// Unsubscribe releases a subscription.
+func (c *HTTPHealthChecker) Unsubscribe(id string) {
+	c.subscribers.unsubscribe(id)
+}
+
+// Start begins periodic checking.
+func (c *HTTPHealthChecker) Start(ctx context.Context, interval time.Duration) error {
+	return c.start(ctx, interval, func(ctx context.Context) {
+		if _, err := c.Collect(ctx); err != nil && ctx.Err() == nil {
+			c.Logger().Warn("HTTP health collection failed", "error", err)
+		}
+	})
+}
+
+// Stop halts checking and releases all subscribers.
+func (c *HTTPHealthChecker) Stop() error {
+	err := c.BaseCollector.Stop()
+	c.subscribers.closeAll()
+	return err
 }

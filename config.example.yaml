@@ -1,0 +1,130 @@
+# maz-term configuration
+#
+# Copy to one of the following and edit:
+#   ./config.yaml
+#   ~/.config/maz-term/config.yaml
+#   /etc/maz-term/config.yaml
+#
+# Or pass a path explicitly: maz-term -config /path/to/config.yaml
+#
+# Every setting has exactly one home. Unknown keys are an error, so a typo is
+# reported at startup rather than silently ignored.
+#
+# Any value can be overridden from the environment with a MAZTERM_ prefix and
+# underscores for dots, for example:
+#   MAZTERM_GENERAL_REFRESH=30s
+#   MAZTERM_CLOUD_AWS_REGION=eu-west-1
+
+general:
+  # How often collectors sample and the dashboard redraws. Minimum 1s.
+  refresh: 5s
+  theme: default
+  # How long history is kept. Accepts h, m, s plus d (days) and w (weeks).
+  history_retention: 7d
+
+# Tab layout. Either the shorthand panels list or the nested rows form works.
+layout:
+  - name: "System"
+    panels: ["cpu", "memory", "disk", "processes"]
+  - name: "HTTP"
+    panels: ["http-endpoints"]
+  - name: "Git"
+    rows:
+      - size: 1
+        panels: ["git-status"]
+      - size: 2
+        panels: ["git-commits"]
+  - name: "History"
+    panels: ["history"]
+  - name: "Notifications"
+    panels: ["notifications"]
+  - name: "Plugins"
+    panels: ["plugins"]
+
+# HTTP endpoints to health-check. Empty by default: maz-term contacts nothing
+# unless you ask it to.
+endpoints: []
+# endpoints:
+#   - name: "API gateway"
+#     url: "https://api.example.com/health"
+#     method: GET
+#     # Considered up when the status matches. Omit to accept any 2xx.
+#     expected_status: 200
+#     timeout: 5s
+#     headers:
+#       # Header names are lowercased when the file is read and canonicalised
+#       # when the request is sent, so X-Health-Probe and x-health-probe are
+#       # equivalent. Values are preserved exactly.
+#       X-Health-Probe: "maz-term"
+
+git:
+  repositories:
+    # A leading ~ is expanded. "." means the working directory.
+    #
+    # Uses your own git installation, so your .gitconfig, SSH agent and
+    # credential helpers apply. No network call is made: unpushed commits are
+    # counted against the last fetch.
+    - path: "."
+      remote: origin
+      branch: ""
+
+# Plugins are native code executed inside this process.
+#
+# Loading requires a build with plugin support (make build-with-plugins) and an
+# entry in allow: giving the SHA-256 of the shared object. An enabled plugin with
+# no recorded digest is refused. `make sample-plugin` prints the digest to use.
+plugins:
+  directory: ""
+  enabled: []
+  allow: {}
+  settings: {}
+# plugins:
+#   directory: "~/.config/maz-term/plugins"
+#   enabled: ["sample"]
+#   allow:
+#     sample: "sha256:<digest printed by make sample-plugin>"
+#   settings:
+#     sample:
+#       interval: "30s"
+
+# Cloud, Kubernetes and CI/CD monitoring are disabled by default.
+#
+# All three reuse the credentials already on this machine, so enabling them is
+# usually the only configuration needed. Run `maz-term -check` to see what
+# resolved and whether it works.
+#
+# Credentials are never read from this file. Placing access_key_id,
+# secret_access_key or token here is rejected at startup.
+cloud:
+  enabled: []          # ["aws"] to enable
+  refresh: 1m
+  aws:
+    # Both optional. Region falls back to AWS_REGION, AWS_DEFAULT_REGION or the
+    # profile's own region; profile falls back to AWS_PROFILE then "default".
+    # Credentials come from the standard chain: environment, ~/.aws/credentials,
+    # ~/.aws/config (including SSO), then instance metadata.
+    region: ""
+    profile: ""
+    additional_regions: []
+    resources: ["ec2", "s3", "rds"]
+
+kubernetes:
+  enabled: false       # true to enable
+  refresh: 30s
+  # Both optional. Resolution matches kubectl: $KUBECONFIG (multi-file merge
+  # included), then ~/.kube/config, then the in-cluster service account. exec
+  # credential plugins work, so EKS, GKE and AKS authenticate normally.
+  config_path: ""
+  context: ""
+  namespaces: ["default"]
+  resources: ["pods", "deployments", "services", "nodes"]
+
+cicd:
+  enabled: []          # ["github"] to enable
+  refresh: 2m
+  github:
+    # The API token is read from MAZTERM_GITHUB_TOKEN or GITHUB_TOKEN.
+    # With the gh CLI: export GITHUB_TOKEN=$(gh auth token)
+    owner: ""
+    repositories: []
+    workflows: []      # empty means every workflow in the repository

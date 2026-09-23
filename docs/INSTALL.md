@@ -16,7 +16,7 @@ This document provides detailed installation instructions for the DevOps Termina
 
 ```bash
 # Download the latest release
-curl -sfL https://github.com/yourusername/maz-term/releases/latest/download/maz-term-$(uname -s)-$(uname -m) -o maz-term
+curl -sfL https://github.com/Teomazivila/maz-term/releases/latest/download/maz-term-$(uname -s)-$(uname -m) -o maz-term
 
 # Make it executable
 chmod +x maz-term
@@ -29,7 +29,7 @@ sudo mv maz-term /usr/local/bin/
 
 ```powershell
 # Download the latest release (PowerShell)
-Invoke-WebRequest -Uri "https://github.com/yourusername/maz-term/releases/latest/download/maz-term-windows-amd64.exe" -OutFile "maz-term.exe"
+Invoke-WebRequest -Uri "https://github.com/Teomazivila/maz-term/releases/latest/download/maz-term-windows-amd64.exe" -OutFile "maz-term.exe"
 
 # Move to a directory in your PATH
 Move-Item -Path "maz-term.exe" -Destination "C:\Windows\System32\"
@@ -40,7 +40,7 @@ Move-Item -Path "maz-term.exe" -Destination "C:\Windows\System32\"
 #### Clone the Repository
 
 ```bash
-git clone https://github.com/yourusername/maz-term.git
+git clone https://github.com/Teomazivila/maz-term.git
 cd maz-term
 ```
 
@@ -60,7 +60,7 @@ make install
 ### 3. Using Go Install
 
 ```bash
-go install github.com/yourusername/maz-term@latest
+go install github.com/Teomazivila/maz-term@latest
 ```
 
 ## Configuration Setup
